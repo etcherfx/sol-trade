@@ -15,7 +15,7 @@ class Config:
         self.jupiter_api_key: str = ""
         self.private_key: str = ""
         self.rpc_https: str = "https://api.mainnet-beta.solana.com"
-        self.jup_api: str = "https://api.jup.ag/ultra/v1"
+        self.jup_api: str = "https://api.jup.ag/swap/v2"
         self.primary_mint: str = ""
         self.primary_mint_symbol: str = ""
         self.sol_mint: str = "So11111111111111111111111111111111111111112"
@@ -28,6 +28,26 @@ class Config:
         self.path = os.path.join(os.path.dirname(__file__), "..", "config.json")
         self._client: Client | None = None
         self._decimals_cache: Dict[str, int] = {}
+
+        # Whale Tracker (ENABLED by default)
+        self.whale_tracking_enabled: bool = True
+        self.whale_wallets: Dict[str, List[str]] = {}
+        self.whale_poll_interval_minutes: int = 5
+        self.whale_data_path: str = "data/whale_data.json"
+
+        # Confluence Filter (ENABLED by default)
+        self.confluence_enabled: bool = True
+
+        # Market Regime (disabled — opt-in addon)
+        self.market_regime_enabled: bool = False
+        self.regime_data_path: str = "data/regime_data.json"
+
+        # Sentiment Circuit Breaker (disabled — opt-in addon)
+        self.sentiment_enabled: bool = False
+        self.sentiment_pause_hours: int = 4
+        self.sentiment_threshold: float = -0.5
+        self.sentiment_crash_threshold: float = -0.7
+        self.sentiment_data_path: str = "data/sentiment_data.json"
         self.load_config()
 
     def load_config(self):
@@ -36,7 +56,7 @@ class Config:
             "jupiter_api_key": "",
             "private_key": "",
             "rpc_https": "https://api.mainnet-beta.solana.com",
-            "jup_api": "https://api.jup.ag/ultra/v1",
+            "jup_api": "https://api.jup.ag/swap/v2",
             "primary_mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
             "primary_mint_symbol": "USDC",
             "secondary_mints": ["So11111111111111111111111111111111111111112"],
@@ -45,6 +65,26 @@ class Config:
             "trading_interval_minutes": 1,
             "max_slippage": 50,
             "strategy": "default",
+
+            # Whale Tracker
+            "whale_tracking_enabled": True,
+            "whale_wallets": {},
+            "whale_poll_interval_minutes": 5,
+            "whale_data_path": "data/whale_data.json",
+
+            # Confluence Filter
+            "confluence_enabled": True,
+
+            # Market Regime
+            "market_regime_enabled": False,
+            "regime_data_path": "data/regime_data.json",
+
+            # Sentiment Circuit Breaker
+            "sentiment_enabled": False,
+            "sentiment_pause_hours": 4,
+            "sentiment_threshold": -0.5,
+            "sentiment_crash_threshold": -0.7,
+            "sentiment_data_path": "data/sentiment_data.json",
         }
 
         with open(self.path, "r") as file:
