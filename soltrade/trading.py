@@ -33,6 +33,10 @@ secondary_mint_symbols: List[str] = config_instance.secondary_mint_symbols
 api_key: str = config_instance.api_key
 trading_interval_minutes: int = config_instance.trading_interval_minutes
 price_update_seconds: int = config_instance.price_update_seconds
+whale_tracking_enabled: bool = config_instance.whale_tracking_enabled
+confluence_enabled: bool = config_instance.confluence_enabled
+market_regime_enabled: bool = config_instance.market_regime_enabled
+sentiment_enabled: bool = config_instance.sentiment_enabled
 
 if not primary_mint or not primary_mint_symbol:
     raise ValueError("Primary mint configuration is missing.")
@@ -185,6 +189,33 @@ def perform_analysis() -> None:
 
         data_frames.append(df)
 
+    # Update whale tracking data
+    if whale_tracking_enabled:
+        try:
+            from soltrade.whale_tracker import update_whale_data
+
+            update_whale_data()
+        except Exception as e:
+            log_general.warning(f"Whale tracker update failed: {e}")
+
+    # Update market regime (only if stale)
+    if market_regime_enabled:
+        try:
+            from soltrade.market_regime import update_regime
+
+            update_regime()
+        except Exception as e:
+            log_general.warning(f"Market regime update failed: {e}")
+
+    # Update sentiment data (only if stale)
+    if sentiment_enabled:
+        try:
+            from soltrade.sentiment import update_sentiment
+
+            update_sentiment(secondary_mint_symbols)
+        except Exception as e:
+            log_general.warning(f"Sentiment update failed: {e}")
+
     combined_df: pd.DataFrame = pd.concat(data_frames, axis=0)
     combined_df.drop_duplicates(subset=["time", "mint"], keep="last", inplace=True)
 
@@ -320,14 +351,49 @@ def perform_analysis() -> None:
 
 
 def handle_buy_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: str, secondary_mint_symbol: str) -> bool:
-    input_amount = _balance_cache.get(primary_mint)
     if df["entry"].iat[-1] == 1:
         mint_symbol = cast(str, df["mint"].iat[0])
+
+        # Check sentiment circuit breaker
+        if sentiment_enabled:
+            from soltrade.sentiment import is_token_blocked, is_market_crash
+
+            if is_token_blocked(secondary_mint_symbol):
+                log_transaction.info(
+                    f"Trading paused for {secondary_mint_symbol}: sentiment circuit breaker active"
+                )
+                return False
+            if is_market_crash():
+                log_transaction.info(
+                    f"All new entries paused: market sentiment crash detected"
+                )
+                return False
+
+        # Evaluate confluence
+        from soltrade.confluence import evaluate_buy_confluence
+
+        result = evaluate_buy_confluence("BUY", secondary_mint_symbol)
+        if result["action"] == "skip":
+            log_transaction.info(
+                f"Buy signal for {secondary_mint_symbol} skipped: {result['reason']}"
+            )
+            return False
+
+        # Apply position size modifier
+        input_amount = _balance_cache.get(primary_mint)
         if input_amount <= 0:
             log_transaction.info(
                 f"SolTrade has detected a buy signal, but does not have enough {primary_mint_symbol} to trade."
             )
             return False
+
+        size_modifier = result["size_modifier"]
+        if size_modifier < 1.0:
+            input_amount = input_amount * size_modifier
+            log_transaction.info(
+                f"Position size reduced to {size_modifier*100:.0f}% for {secondary_mint_symbol}: {result['reason']}"
+            )
+
         log_transaction.info(
             f"SolTrade has detected a buy signal for {mint_symbol} using {input_amount} {primary_mint_symbol}."
         )
@@ -360,6 +426,25 @@ def handle_sell_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: st
 
     if df["exit"].iat[-1] == 1:
         mint_symbol = cast(str, df["mint"].iat[0])
+
+        # Evaluate confluence for sells
+        from soltrade.confluence import evaluate_sell_confluence
+
+        result = evaluate_sell_confluence("SELL", secondary_mint_symbol)
+        if result["action"] == "skip":
+            log_transaction.info(
+                f"Sell signal for {secondary_mint_symbol} skipped: {result['reason']}"
+            )
+            return False
+
+        # Apply position size modifier
+        size_modifier = result["size_modifier"]
+        if size_modifier < 1.0:
+            input_amount = input_amount * size_modifier
+            log_transaction.info(
+                f"Sell position size reduced to {size_modifier*100:.0f}% for {secondary_mint_symbol}: {result['reason']}"
+            )
+
         log_transaction.info(
             f"SolTrade has detected a sell signal for {input_amount} {mint_symbol}."
         )
