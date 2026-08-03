@@ -13,6 +13,7 @@ from rich.text import Text
 from rich import box
 
 from soltrade.config import config
+from soltrade.confluence import _is_protective_exit
 from soltrade.log import log_general, log_transaction, silence_console_logging
 from soltrade.strategy import (
     strategy,
@@ -427,23 +428,25 @@ def handle_sell_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: st
     if df["exit"].iat[-1] == 1:
         mint_symbol = cast(str, df["mint"].iat[0])
 
-        # Evaluate confluence for sells
-        from soltrade.confluence import evaluate_sell_confluence
+        # Protective exits (stop-loss / take-profit / trailing stop) always execute at 100%
+        if not _is_protective_exit(df):
+            # Evaluate confluence for sells
+            from soltrade.confluence import evaluate_sell_confluence
 
-        result = evaluate_sell_confluence("SELL", secondary_mint_symbol)
-        if result["action"] == "skip":
-            log_transaction.info(
-                f"Sell signal for {secondary_mint_symbol} skipped: {result['reason']}"
-            )
-            return False
+            result = evaluate_sell_confluence("SELL", secondary_mint_symbol)
+            if result["action"] == "skip":
+                log_transaction.info(
+                    f"Sell signal for {secondary_mint_symbol} skipped: {result['reason']}"
+                )
+                return False
 
-        # Apply position size modifier
-        size_modifier = result["size_modifier"]
-        if size_modifier < 1.0:
-            input_amount = input_amount * size_modifier
-            log_transaction.info(
-                f"Sell position size reduced to {size_modifier*100:.0f}% for {secondary_mint_symbol}: {result['reason']}"
-            )
+            # Apply position size modifier
+            size_modifier = result["size_modifier"]
+            if size_modifier < 1.0:
+                input_amount = input_amount * size_modifier
+                log_transaction.info(
+                    f"Sell position size reduced to {size_modifier*100:.0f}% for {secondary_mint_symbol}: {result['reason']}"
+                )
 
         log_transaction.info(
             f"SolTrade has detected a sell signal for {input_amount} {mint_symbol}."

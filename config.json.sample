@@ -14,10 +14,7 @@
   "strategy": "default",
 
   "whale_tracking_enabled": true,
-  "whale_wallets": {
-    "SOL": ["wallet_address_1", "wallet_address_2"],
-    "TRUMP": ["wallet_address_3"]
-  },
+  "whale_wallets": {},
   "whale_poll_interval_minutes": 5,
 
   "confluence_enabled": true,

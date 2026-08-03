@@ -46,7 +46,7 @@ Monitors token balance changes for configured whale wallets in real-time. The wh
 
 - **ACCUMULATING**: Whales are net buying (>10% balance increase)
 - **DUMPING**: Whales are net selling (>10% balance decrease)
-- **NEUTRAL**: No significant movement or insufficient data
+- **NEUTRAL**: No significant movement; **NO_DATA**: no wallets configured or insufficient data
 
 #### Configuration
 
@@ -77,6 +77,8 @@ Every trade routes through the confluence gate before execution. The filter comb
 | SELL | DUMPING | Full exit | 100% |
 | SELL | NEUTRAL | Half exit | 50% |
 | SELL | ACCUMULATING | Partial exit | 50% |
+
+With no whale wallets configured (or while the tracker is still collecting snapshots), trades pass at full size.
 
 In bearish market regimes, all position sizes are further reduced by 50%.
 

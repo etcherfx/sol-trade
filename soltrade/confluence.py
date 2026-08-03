@@ -6,7 +6,21 @@ and sentiment circuit breaker state.
 
 from typing import Dict
 
+import pandas as pd
+
 from soltrade.config import config
+
+
+def _is_protective_exit(df: "pd.DataFrame") -> bool:
+    """True when the last bar hit a stop-loss, take-profit, or trailing stop."""
+    last = df.iloc[-1]
+    if "stoploss" in df.columns and pd.notna(last["stoploss"]) and last["close"] <= last["stoploss"]:
+        return True
+    if "takeprofit" in df.columns and pd.notna(last["takeprofit"]) and last["close"] >= last["takeprofit"]:
+        return True
+    if "trailing_stoploss" in df.columns and pd.notna(last["trailing_stoploss"]) and last["close"] <= last["trailing_stoploss"]:
+        return True
+    return False
 
 
 def evaluate_buy_confluence(ta_signal: str, token_symbol: str) -> Dict[str, object]:
@@ -113,14 +127,14 @@ def _get_whale_signal(token_symbol: str) -> str:
     """Get whale signal for a token, with graceful fallback."""
     cfg = config()
     if not cfg.whale_tracking_enabled:
-        return "NEUTRAL"
+        return "NO_DATA"
 
     try:
         from soltrade.whale_tracker import get_whale_signal
 
         return get_whale_signal(token_symbol)
     except ImportError:
-        return "NEUTRAL"
+        return "NO_DATA"
 
 
 def _get_regime_modifier() -> float:
@@ -145,11 +159,14 @@ def _buy_decision_matrix(ta_signal: str, whale_signal: str) -> Dict[str, object]
     | BUY   | ACCUMULATING   | full   | 1.0  |
     | BUY   | NEUTRAL        | half   | 0.5  |
     | BUY   | DUMPING        | skip   | 0.0  |
+    | BUY   | NO_DATA        | full   | 1.0  |
     """
     if whale_signal == "ACCUMULATING":
         return {"size_modifier": 1.0, "reason": "whales_accumulating"}
     elif whale_signal == "DUMPING":
         return {"size_modifier": 0.0, "reason": "whales_dumping"}
+    elif whale_signal == "NO_DATA":
+        return {"size_modifier": 1.0, "reason": "no_whale_data"}
     else:
         return {"size_modifier": 0.5, "reason": "whales_neutral"}
 
@@ -162,10 +179,13 @@ def _sell_decision_matrix(ta_signal: str, whale_signal: str) -> Dict[str, object
     | SELL  | DUMPING        | full    | 1.0  |
     | SELL  | NEUTRAL        | half    | 0.5  |
     | SELL  | ACCUMULATING   | partial | 0.5  |
+    | SELL  | NO_DATA        | full    | 1.0  |
     """
     if whale_signal == "DUMPING":
         return {"size_modifier": 1.0, "reason": "whales_dumping"}
     elif whale_signal == "ACCUMULATING":
         return {"size_modifier": 0.5, "reason": "whales_accumulating_partial_sell"}
+    elif whale_signal == "NO_DATA":
+        return {"size_modifier": 1.0, "reason": "no_whale_data"}
     else:
         return {"size_modifier": 0.5, "reason": "whales_neutral"}

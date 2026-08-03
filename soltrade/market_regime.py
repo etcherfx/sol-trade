@@ -53,6 +53,8 @@ def _fetch_sol_usdc_daily() -> list:
     """Fetch SOL/USDC daily candlestick data from CryptoCompare."""
     url = "https://min-api.cryptocompare.com/data/v2/histoday"
     params = {"fsym": "SOL", "tsym": "USDC", "limit": 30}
+    if config().api_key:
+        params["api_key"] = config().api_key
     response = requests.get(url, params=params, timeout=30)
     response.raise_for_status()
     data = response.json()

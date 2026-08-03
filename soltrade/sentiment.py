@@ -55,7 +55,8 @@ def _fetch_reddit_posts(subreddit: str, limit: int = 25) -> list:
     """Fetch posts from a Reddit subreddit."""
     url = f"https://www.reddit.com/r/{subreddit}.json"
     params = {"limit": limit}
-    response = requests.get(url, params=params, timeout=30)
+    headers = {"User-Agent": "SolTrade/2.0"}
+    response = requests.get(url, params=params, headers=headers, timeout=30)
     if response.status_code != 200:
         return []
     data = response.json()

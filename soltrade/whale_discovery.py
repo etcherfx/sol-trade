@@ -34,7 +34,7 @@ def find_top_holders(token_mint: str, limit: int = 20) -> List[Dict[str, Any]]:
     holders = []
     for account in accounts[:limit]:
         # Get UI amount by querying token account info
-        ui_amount = account.ui_amount
+        ui_amount = account.amount.ui_amount
         if ui_amount is not None:
             holders.append({
                 "address": str(account.address),

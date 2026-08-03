@@ -54,7 +54,8 @@ def _load_data() -> List[Dict[str, Any]]:
         return []
     try:
         with open(path, "r") as f:
-            return json.load(f)
+            data = json.load(f)
+            return data if isinstance(data, list) else []
     except (json.JSONDecodeError, KeyError) as e:
         log_general.warning(f"Failed to load whale data from {path}: {e}")
         return []
@@ -79,6 +80,17 @@ def update_whale_data() -> None:
         return
 
     existing_data = _load_data()
+
+    latest_ts = max((e.get("ts") for e in existing_data), default=None)
+    if latest_ts:
+        try:
+            if (datetime.now(timezone.utc) - datetime.fromisoformat(latest_ts)) < timedelta(
+                minutes=cfg.whale_poll_interval_minutes
+            ):
+                return
+        except (ValueError, TypeError):
+            pass  # unparseable timestamp -> poll anyway
+
     timestamp = datetime.now(timezone.utc).isoformat()
 
     for token_symbol, wallets in whale_wallets.items():
@@ -124,27 +136,29 @@ def update_whale_data() -> None:
 
 
 def get_whale_signal(token_symbol: str) -> str:
-    """Return 'ACCUMULATING', 'DUMPING', or 'NEUTRAL' for a token.
+    """Return 'ACCUMULATING', 'DUMPING', 'NEUTRAL', or 'NO_DATA' for a token.
 
     Signal is based on net balance delta across all tracked whale wallets
-    over rolling time windows. Returns NEUTRAL if no data or RPC failures.
+    over rolling time windows. Returns NEUTRAL if there is no significant
+    movement. Returns NO_DATA when no wallets are configured or there are
+    insufficient snapshots to compute a signal.
     """
     cfg = config()
     if not cfg.whale_tracking_enabled:
-        return "NEUTRAL"
+        return "NO_DATA"
 
     whale_wallets = cfg.whale_wallets.get(token_symbol, [])
     if len(whale_wallets) < 2:
-        return "NEUTRAL"
+        return "NO_DATA"
 
     data = _load_data()
     if not data:
-        return "NEUTRAL"
+        return "NO_DATA"
 
     # Filter to this token's data
     token_data = [entry for entry in data if entry.get("token") == token_symbol]
     if len(token_data) < 2:
-        return "NEUTRAL"
+        return "NO_DATA"
 
     now = datetime.now(timezone.utc)
 
