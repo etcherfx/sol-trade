@@ -1,8 +1,9 @@
-import talib as ta
-from soltrade.config import config
-from soltrade.log import log_general
-from .base_strategy import BaseStrategy
 import pandas as pd
+
+from soltrade.config import config
+from soltrade.strategy import ema, sma, rsi
+
+from .base_strategy import BaseStrategy
 
 
 class DefaultStrategy(BaseStrategy):
@@ -18,17 +19,17 @@ class DefaultStrategy(BaseStrategy):
             ### Populate default indicators:
 
             # Calculates EMA
-            self.df["ema_s"] = ta.EMA(self.df["close"], timeperiod=5)
-            self.df["ema_m"] = ta.EMA(self.df["close"], timeperiod=21)
+            self.df["ema_s"] = ema(self.df["close"], 5)
+            self.df["ema_m"] = ema(self.df["close"], 21)
 
             # Bollinger Bands
-            sma = ta.SMA(self.df["close"], timeperiod=14)
+            sma_vals = sma(self.df["close"], 14)
             std = self.df["close"].rolling(14).std()
-            self.df["upper_bband"] = sma + std * 2
-            self.df["lower_bband"] = sma - std * 2
+            self.df["upper_bband"] = sma_vals + std * 2
+            self.df["lower_bband"] = sma_vals - std * 2
 
             # RSI
-            self.df["rsi"] = ta.RSI(self.df["close"], timeperiod=14)
+            self.df["rsi"] = rsi(self.df["close"], 14)
 
             # Entry
             entry = (

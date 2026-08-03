@@ -147,8 +147,7 @@ Pulls social sentiment from Reddit for tracked tokens. If sentiment crashes belo
 
 ## 🛠️ Installation
 
-- Install Microsoft Visual C++ Build Tools from [here](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
-- Install TA-Lib from [here](https://ta-lib.org/install/)
+- Install Microsoft Visual C++ Build Tools from [here](https://visualstudio.microsoft.com/visual-cpp-build-tools/) (only needed if a dependency must compile from source)
 - Install UV:
   - Windows:
     ```
