@@ -20,6 +20,7 @@ Hard fork of noahtheprogrammer's [soltrade](https://github.com/noahtheprogrammer
 - [📖 Table of Contents](#-table-of-contents)
 - [🔗 Links](#-links)
 - [📂 Features](#-features)
+- [🔬 Advanced Features](#-advanced-features)
 - [📚 Term Definitions](#-term-definitions)
 - [🔧 Prerequisites](#-prerequisites)
 - [⚙️ Configuration](#️-configuration)
@@ -36,6 +37,66 @@ Hard fork of noahtheprogrammer's [soltrade](https://github.com/noahtheprogrammer
 
 - **Custom strategies**: Create your own trading strategies and use them with SolTrade. Customize parameters like `stoploss`, `trailing_stoploss`, `takeprofit`, etc to fit your needs
 - **Multiple token trading**: Instead of waiting for one token to meet trading conditions, you can analyze multiple tokens to increase trade chances
+
+## 🔬 Advanced Features
+
+### 🐋 Whale Wallet Tracking (Enabled by Default)
+
+Monitors token balance changes for configured whale wallets in real-time. The whale tracker queries Solana RPC to track balance snapshots, then analyzes net balance delta over 1h, 4h, and 24h rolling windows to produce a signal per token:
+
+- **ACCUMULATING**: Whales are net buying (>10% balance increase)
+- **DUMPING**: Whales are net selling (>10% balance decrease)
+- **NEUTRAL**: No significant movement or insufficient data
+
+#### Configuration
+
+Add whale wallet addresses to your `config.json`:
+```json
+"whale_wallets": {
+  "SOL": ["wallet_address_1", "wallet_address_2"],
+  "TRUMP": ["wallet_address_3"]
+}
+```
+
+#### Discovering Whale Wallets
+
+Use the built-in whale discovery CLI:
+```
+uv run -m soltrade.whale_discovery TOKEN_MINT [LIMIT]
+```
+
+### ⚖️ Confluence Filter (Enabled by Default)
+
+Every trade routes through the confluence gate before execution. The filter combines whale signals with market regime and sentiment to adjust position sizing:
+
+| TA Signal | Whale Activity | Action | Position Size |
+|-----------|---------------|--------|--------------|
+| BUY | ACCUMULATING | Full entry | 100% |
+| BUY | NEUTRAL | Half entry | 50% |
+| BUY | DUMPING | Skip | 0% |
+| SELL | DUMPING | Full exit | 100% |
+| SELL | NEUTRAL | Half exit | 50% |
+| SELL | ACCUMULATING | Partial exit | 50% |
+
+In bearish market regimes, all position sizes are further reduced by 50%.
+
+### 📊 Market Regime Detection (Opt-In)
+
+Determines overall Solana market direction using SOL/USDC daily price trend (20-day SMA) and DEX volume trends. Set `market_regime_enabled: true` in config to activate.
+
+| Regime | Condition | Position Modifier |
+|--------|-----------|------------------|
+| BULLISH | Price above 20-day SMA + rising volume | 1.0x |
+| NEUTRAL | Mixed signals | 1.0x |
+| BEARISH | Price below 20-day SMA + falling volume | 0.5x |
+
+### 🛑 Sentiment Circuit Breaker (Opt-In)
+
+Pulls social sentiment from Reddit for tracked tokens. If sentiment crashes below a configurable threshold, trading for that token is paused automatically. Set `sentiment_enabled: true` in config to activate.
+
+- **Token pause**: Individual token blocked when sentiment drops below `sentiment_threshold` (default: -0.5)
+- **Market crash**: All new entries paused when all tokens drop below `sentiment_crash_threshold` (default: -0.7)
+- **Recovery**: Blocks expire after `sentiment_pause_hours` (default: 4 hours)
 
 ## 📚 Term Definitions
 
@@ -63,7 +124,7 @@ Hard fork of noahtheprogrammer's [soltrade](https://github.com/noahtheprogrammer
   | `jupiter_api_key`          | Your Jupiter API key from portal.jup.ag                               |                `Null`                 |
   | `private_key`              | Your Solana wallet private key                                        |                `Null`                 |
   | `rpc_https`                | HTTPS endpoint of your RPC (for balance checks & token info)          | `https://api.mainnet-beta.solana.com` |
-  | `jup_api`                  | Jupiter Ultra API endpoint                                            |     `https://api.jup.ag/ultra/v1`     |
+  | `jup_api`                  | Jupiter Swap API endpoint                                             |     `https://api.jup.ag/swap/v2`     |
   | `primary_mint`             | Token address of main currency                                        |               `EPjF..v`               |
   | `primary_mint_symbol`      | Token symbol of main token                                            |                `USDC`                 |
   | `secondary_mints`          | Token address of each custom token(s) separated by `,` in a list `[]` |              `[So11..2]`              |
@@ -72,6 +133,15 @@ Hard fork of noahtheprogrammer's [soltrade](https://github.com/noahtheprogrammer
   | `trading_interval_minutes` | Minute-based time interval for technical analysis                     |                  `1`                  |
   | `max_slippage`             | Maximum slippage % in BPS (e.g. `50` = `0.50%`)                       |                 `50`                  |
   | `strategy`                 | The strategy you want to trade with                                   |               `default`               |
+  | `whale_tracking_enabled`   | Enable whale wallet tracking                                          |               `true`                 |
+  | `whale_wallets`            | Map of token symbols to whale wallet addresses                        |                  `{}`                 |
+  | `whale_poll_interval_minutes` | How often to poll whale wallets                                  |                  `5`                  |
+  | `confluence_enabled`       | Enable confluence filter for all trades                               |               `true`                 |
+  | `market_regime_enabled`    | Enable market regime detection (opt-in)                               |              `false`                 |
+  | `sentiment_enabled`        | Enable sentiment circuit breaker (opt-in)                             |              `false`                 |
+  | `sentiment_pause_hours`    | Hours to pause trading when sentiment crashes                         |                  `4`                  |
+  | `sentiment_threshold`      | Per-token sentiment block threshold (-1 to +1)                        |               `-0.5`                 |
+  | `sentiment_crash_threshold`| Market-wide crash threshold (-1 to +1)                              |               `-0.7`                 |
 
 ## 🛠️ Installation
 

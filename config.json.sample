@@ -3,7 +3,7 @@
   "jupiter_api_key": "",
   "private_key": "",
   "rpc_https": "https://api.mainnet-beta.solana.com",
-  "jup_api": "https://api.jup.ag/ultra/v1",
+  "jup_api": "https://api.jup.ag/swap/v2",
   "primary_mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
   "primary_mint_symbol": "USDC",
   "secondary_mints": ["So11111111111111111111111111111111111111112"],
@@ -11,5 +11,21 @@
   "price_update_seconds": 60,
   "trading_interval_minutes": 1,
   "max_slippage": 50,
-  "strategy": "default"
+  "strategy": "default",
+
+  "whale_tracking_enabled": true,
+  "whale_wallets": {
+    "SOL": ["wallet_address_1", "wallet_address_2"],
+    "TRUMP": ["wallet_address_3"]
+  },
+  "whale_poll_interval_minutes": 5,
+
+  "confluence_enabled": true,
+
+  "market_regime_enabled": false,
+
+  "sentiment_enabled": false,
+  "sentiment_pause_hours": 4,
+  "sentiment_threshold": -0.5,
+  "sentiment_crash_threshold": -0.7
 }
