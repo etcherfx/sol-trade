@@ -1,5 +1,5 @@
 [project]
-name = "soltrade"
+name = "sol-trade"
 version = "2.0.0"
 description = "A Solana trading bot with lots of features."
 readme = "README.md"

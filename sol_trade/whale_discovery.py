@@ -6,9 +6,9 @@ from typing import List, Dict, Any
 
 from solders.pubkey import Pubkey
 
-from soltrade.config import config
-from soltrade.log import log_general
-from soltrade.utils import handle_rate_limiting
+from sol_trade.config import config
+from sol_trade.log import log_general
+from sol_trade.utils import handle_rate_limiting
 
 
 @handle_rate_limiting(retry_attempts=3, retry_delay=10)
@@ -47,10 +47,10 @@ def find_top_holders(token_mint: str, limit: int = 20) -> List[Dict[str, Any]]:
 def main() -> None:
     """CLI entry point for whale discovery."""
     if len(sys.argv) < 2:
-        print("Usage: uv run -m soltrade.whale_discovery TOKEN_MINT [LIMIT]")
+        print("Usage: uv run -m sol_trade.whale_discovery TOKEN_MINT [LIMIT]")
         print()
         print("Example:")
-        print('  uv run -m soltrade.whale_discovery So11111111111111111111111111111111111111112 10')
+        print('  uv run -m sol_trade.whale_discovery So11111111111111111111111111111111111111112 10')
         sys.exit(1)
 
     token_mint = sys.argv[1]

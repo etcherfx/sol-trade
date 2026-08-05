@@ -1,9 +1,12 @@
-<div align="center">
-  <img src="projectInfo/banner.png" alt="SolTrade" width="850">
+<h1 align="center">
+  <img src="projectInfo/banner.png" alt="SolTrade Banner" width="850">
+</h1>
 
-[![License](https://img.shields.io/github/license/etcherfx/soltrade?style=for-the-badge)](https://github.com/etcherfx/soltrade/blob/main/LICENSE)
-[![GitHub issues](https://img.shields.io/github/issues/etcherfx/soltrade?style=for-the-badge)](https://github.com/etcherfx/soltrade/issues)
-[![GitHub Release](https://img.shields.io/github/release/etcherfx/soltrade?include_prereleases&style=for-the-badge)](https://github.com/etcherfx/soltrade/releases/latest)
+<div align="center">
+
+[![License](https://img.shields.io/github/license/etcherfx/sol-trade?style=for-the-badge)](https://github.com/etcherfx/sol-trade/blob/main/LICENSE)
+[![GitHub issues](https://img.shields.io/github/issues/etcherfx/sol-trade?style=for-the-badge)](https://github.com/etcherfx/sol-trade/issues)
+[![GitHub Release](https://img.shields.io/github/release/etcherfx/sol-trade?include_prereleases&style=for-the-badge)](https://github.com/etcherfx/sol-trade/releases/latest)
 
 **Automated trading for Solana.** SolTrade watches the tokens you choose, runs technical
 analysis on every trading interval, and enters and exits positions for you — with optional
@@ -37,8 +40,8 @@ A hard fork of [noahtheprogrammer/soltrade](https://github.com/noahtheprogrammer
 1. Install [uv](https://docs.astral.sh/uv/) (Python runtime manager — the only requirement).
 2. Clone the repo and copy the sample config:
    ```bash
-   git clone https://github.com/etcherfx/SolTrade.git
-   cd SolTrade
+   git clone https://github.com/etcherfx/sol-trade.git
+   cd sol-trade
    cp config.json.sample config.json
    ```
 3. Open `config.json` and fill in the essentials (see [Configuration](#configuration)):
@@ -156,11 +159,11 @@ compares balances over 1h, 4h, and 24h windows to produce a per-token signal:
 any token:
 
 ```bash
-uv run -m soltrade.whale_discovery TOKEN_MINT [LIMIT]
+uv run -m sol_trade.whale_discovery TOKEN_MINT [LIMIT]
 ```
 
 ```bash
-uv run -m soltrade.whale_discovery So11111111111111111111111111111111111111112 10
+uv run -m sol_trade.whale_discovery So11111111111111111111111111111111111111112 10
 ```
 
 ### Confluence filter
@@ -251,15 +254,15 @@ uv run main.py
      that should buy and `self.df["exit"] = 1` on bars that should sell.
 3. Set `"strategy": "{name}"` in `config.json`.
 
-Indicators are available from `soltrade.strategy` — pure-python, TA-Lib-equivalent
+Indicators are available from `sol_trade.strategy` — pure-python, TA-Lib-equivalent
 implementations of `ema`, `sma`, and `rsi`:
 
 ```python
 # strategies/momentum_strategy.py
 import pandas as pd
 
-from soltrade.config import config
-from soltrade.strategy import ema, rsi
+from sol_trade.config import config
+from sol_trade.strategy import ema, rsi
 from .base_strategy import BaseStrategy
 
 

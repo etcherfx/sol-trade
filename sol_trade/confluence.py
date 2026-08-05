@@ -8,7 +8,7 @@ from typing import Dict
 
 import pandas as pd
 
-from soltrade.config import config
+from sol_trade.config import config
 
 
 def _is_protective_exit(df: "pd.DataFrame") -> bool:
@@ -41,7 +41,7 @@ def evaluate_buy_confluence(ta_signal: str, token_symbol: str) -> Dict[str, obje
 
     # Check sentiment circuit breaker first
     if cfg.sentiment_enabled:
-        from soltrade.sentiment import is_token_blocked, is_market_crash
+        from sol_trade.sentiment import is_token_blocked, is_market_crash
 
         if is_token_blocked(token_symbol):
             return {
@@ -130,7 +130,7 @@ def _get_whale_signal(token_symbol: str) -> str:
         return "NO_DATA"
 
     try:
-        from soltrade.whale_tracker import get_whale_signal
+        from sol_trade.whale_tracker import get_whale_signal
 
         return get_whale_signal(token_symbol)
     except ImportError:
@@ -144,7 +144,7 @@ def _get_regime_modifier() -> float:
         return 1.0
 
     try:
-        from soltrade.market_regime import get_position_modifier
+        from sol_trade.market_regime import get_position_modifier
 
         return get_position_modifier()
     except ImportError:

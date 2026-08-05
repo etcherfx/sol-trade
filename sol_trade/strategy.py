@@ -3,8 +3,8 @@ import importlib
 import numpy as np
 import pandas as pd
 
-from soltrade.config import config
-from soltrade.log import log_general
+from sol_trade.config import config
+from sol_trade.log import log_general
 
 strategy_instance = None
 

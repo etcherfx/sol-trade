@@ -3,7 +3,7 @@ from functools import wraps
 
 from solana.exceptions import SolanaRpcException
 
-from soltrade.log import log_general
+from sol_trade.log import log_general
 
 
 def handle_rate_limiting(retry_attempts=3, retry_delay=10):

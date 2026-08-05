@@ -7,8 +7,8 @@ from typing import Any, Dict
 
 import requests
 
-from soltrade.config import config
-from soltrade.log import log_general
+from sol_trade.config import config
+from sol_trade.log import log_general
 
 
 def _load_regime() -> Dict[str, Any]:

@@ -1,7 +1,7 @@
-from soltrade.wallet import find_balance
-from soltrade.config import config
-from soltrade.trading import start_trading
-from soltrade.log import log_general, silence_console_logging
+from sol_trade.wallet import find_balance
+from sol_trade.config import config
+from sol_trade.trading import start_trading
+from sol_trade.log import log_general, silence_console_logging
 from prompt_toolkit import Application
 from prompt_toolkit.layout import Layout
 from prompt_toolkit.widgets import Dialog, Button

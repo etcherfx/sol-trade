@@ -9,9 +9,9 @@ from typing import Any, Dict, List
 from solana.rpc.types import TokenAccountOpts
 from solders.pubkey import Pubkey
 
-from soltrade.config import config
-from soltrade.log import log_general
-from soltrade.utils import handle_rate_limiting
+from sol_trade.config import config
+from sol_trade.log import log_general
+from sol_trade.utils import handle_rate_limiting
 
 
 @handle_rate_limiting(retry_attempts=3, retry_delay=10)

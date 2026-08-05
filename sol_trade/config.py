@@ -6,7 +6,7 @@ from solana.rpc.api import Client
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 
-from soltrade.log import log_general
+from sol_trade.log import log_general
 
 
 class Config:

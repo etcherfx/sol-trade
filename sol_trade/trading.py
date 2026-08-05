@@ -12,10 +12,10 @@ from rich.live import Live
 from rich.text import Text
 from rich import box
 
-from soltrade.config import config
-from soltrade.confluence import _is_protective_exit
-from soltrade.log import log_general, log_transaction, silence_console_logging
-from soltrade.strategy import (
+from sol_trade.config import config
+from sol_trade.confluence import _is_protective_exit
+from sol_trade.log import log_general, log_transaction, silence_console_logging
+from sol_trade.strategy import (
     strategy,
     calc_stoploss,
     calc_trailing_stoploss,
@@ -23,8 +23,8 @@ from soltrade.strategy import (
     calc_takeprofit,
     set_position,
 )
-from soltrade.transactions import perform_swap
-from soltrade.wallet import find_balance
+from sol_trade.transactions import perform_swap
+from sol_trade.wallet import find_balance
 
 config_instance = config()
 primary_mint: str = config_instance.primary_mint
@@ -193,7 +193,7 @@ def perform_analysis() -> None:
     # Update whale tracking data
     if whale_tracking_enabled:
         try:
-            from soltrade.whale_tracker import update_whale_data
+            from sol_trade.whale_tracker import update_whale_data
 
             update_whale_data()
         except Exception as e:
@@ -202,7 +202,7 @@ def perform_analysis() -> None:
     # Update market regime (only if stale)
     if market_regime_enabled:
         try:
-            from soltrade.market_regime import update_regime
+            from sol_trade.market_regime import update_regime
 
             update_regime()
         except Exception as e:
@@ -211,7 +211,7 @@ def perform_analysis() -> None:
     # Update sentiment data (only if stale)
     if sentiment_enabled:
         try:
-            from soltrade.sentiment import update_sentiment
+            from sol_trade.sentiment import update_sentiment
 
             update_sentiment(secondary_mint_symbols)
         except Exception as e:
@@ -357,7 +357,7 @@ def handle_buy_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: str
 
         # Check sentiment circuit breaker
         if sentiment_enabled:
-            from soltrade.sentiment import is_token_blocked, is_market_crash
+            from sol_trade.sentiment import is_token_blocked, is_market_crash
 
             if is_token_blocked(secondary_mint_symbol):
                 log_transaction.info(
@@ -371,7 +371,7 @@ def handle_buy_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: str
                 return False
 
         # Evaluate confluence
-        from soltrade.confluence import evaluate_buy_confluence
+        from sol_trade.confluence import evaluate_buy_confluence
 
         result = evaluate_buy_confluence("BUY", secondary_mint_symbol)
         if result["action"] == "skip":
@@ -431,7 +431,7 @@ def handle_sell_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: st
         # Protective exits (stop-loss / take-profit / trailing stop) always execute at 100%
         if not _is_protective_exit(df):
             # Evaluate confluence for sells
-            from soltrade.confluence import evaluate_sell_confluence
+            from sol_trade.confluence import evaluate_sell_confluence
 
             result = evaluate_sell_confluence("SELL", secondary_mint_symbol)
             if result["action"] == "skip":

@@ -7,8 +7,8 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
-from soltrade.config import config
-from soltrade.log import log_general
+from sol_trade.config import config
+from sol_trade.log import log_general
 
 # Keyword scoring lists
 _POSITIVE_KEYWORDS = {

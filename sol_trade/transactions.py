@@ -5,8 +5,8 @@ import httpx
 from solders.message import to_bytes_versioned
 from solders.transaction import VersionedTransaction
 
-from soltrade.config import config
-from soltrade.log import log_general, log_transaction
+from sol_trade.config import config
+from sol_trade.log import log_general, log_transaction
 
 
 class MarketPosition:
