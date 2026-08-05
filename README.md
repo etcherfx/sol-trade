@@ -24,19 +24,21 @@ A hard fork of [noahtheprogrammer/soltrade](https://github.com/noahtheprogrammer
 
 ## Quick Start
 
-1. Install [uv](https://docs.astral.sh/uv/).
+1. Install [uv](https://docs.astral.sh/uv/):
+
+   **Windows**
 
    ```powershell
-   # Windows
    powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
    ```
 
+   **Linux / macOS**
+
    ```bash
-   # Linux / macOS
    curl -LsSf https://astral.sh/uv/install.sh | sh
    ```
 
-2. Clone the repository and create the configuration file.
+2. Clone the repository and create the configuration file:
 
    ```bash
    git clone https://github.com/etcherfx/sol-trade.git
@@ -50,7 +52,7 @@ A hard fork of [noahtheprogrammer/soltrade](https://github.com/noahtheprogrammer
    - `api_key` — your [CryptoCompare](https://www.cryptocompare.com/cryptopian/api-keys) API key
    - `secondary_mints` / `secondary_mint_symbols` — the token(s) you want to trade
 
-4. Start the bot.
+4. Start the bot:
 
    ```bash
    uv run main.py
@@ -94,9 +96,9 @@ SolTrade reads its configuration from `config.json` in the project root. Copy `c
 
 SolTrade runs a continuous loop:
 
-1. **Fetch** — retrieve fresh prices and candlesticks for every configured token.
+1. **Fetch** — the bot retrieves fresh prices and candlesticks for every configured token.
 2. **Analyze** — the active strategy computes indicators (EMA, RSI, and Bollinger Bands by default) and produces `entry` / `exit` signals.
-3. **Act** — buy signals open a position; sell signals, stop-losses, take-profits, and trailing stops close it. Every trade is routed through Jupiter's Swap API.
+3. **Act** — buy signals open a position; sell signals, stop-losses, take-profits, and trailing stops close it. Every trade is routed through the Jupiter Swap API.
 4. **Protect** — open positions are tracked and persisted to disk, so a restart resumes where it left off.
 
 Optional layers — whale tracking, a confluence sizing filter, market regime detection, and a sentiment circuit breaker — operate between the signal and the trade. See [Advanced features](#advanced-features) for details.
@@ -108,7 +110,7 @@ Optional layers — whale tracking, a confluence sizing filter, market regime de
 | Technical analysis | EMA, RSI, and Bollinger Bands out of the box — pure Python, no C libraries |
 | Multiple tokens | Trade several tokens in the same loop |
 | Position management | Stop-loss, take-profit, and trailing stop on every position |
-| Custom strategies | Drop in your own strategy file |
+| Custom strategies | Use your own strategy file |
 | Whale tracking | Watches configured wallets for accumulation or dumping |
 | Confluence filter | Sizes every trade from whale activity, market regime, and sentiment |
 | Market regime | Scales positions down in bearish markets *(opt-in)* |
@@ -121,7 +123,7 @@ Optional layers — whale tracking, a confluence sizing filter, market regime de
 
 ### Whale wallet tracking
 
-The tracker polls the wallets in `whale_wallets` every `whale_poll_interval_minutes` minutes and compares balances over 1-hour, 4-hour, and 24-hour windows:
+The tracker polls the wallets listed in `whale_wallets` at the interval specified by `whale_poll_interval_minutes` and compares balances over 1-hour, 4-hour, and 24-hour windows:
 
 | Signal | Meaning |
 | --- | --- |
@@ -136,12 +138,13 @@ The tracker polls the wallets in `whale_wallets` every `whale_poll_interval_minu
 }
 ```
 
-Top token holders can be discovered with the built-in CLI:
+Top token holders can be discovered with the built-in CLI. The command below lists the ten largest holders of SOL:
 
 ```bash
-uv run -m sol_trade.whale_discovery TOKEN_MINT [LIMIT]
 uv run -m sol_trade.whale_discovery So11111111111111111111111111111111111111112 10
 ```
+
+Usage: `uv run -m sol_trade.whale_discovery TOKEN_MINT [LIMIT]`
 
 ### Confluence filter
 
@@ -240,7 +243,7 @@ New strategies may be contributed via pull request.
 ## FAQ
 
 **What happens if I stop the bot while I'm holding a position?**
-Your open position is saved to `data/{TOKEN}_data.csv`. On restart, the bot picks it up and keeps managing its stop-loss and take-profit.
+Your open position is saved to `data/{TOKEN}_data.csv`. On restart, the bot resumes managing its stop-loss and take-profit.
 
 **Do I need a Jupiter API key?**
 No. It is optional and only sent if set — the default `swap/v2` endpoint works without one.
