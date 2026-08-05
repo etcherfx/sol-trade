@@ -2,8 +2,8 @@
 
 import json
 import os
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import requests
 
@@ -11,7 +11,7 @@ from sol_trade.config import config
 from sol_trade.log import log_general
 
 
-def _load_regime() -> Dict[str, Any]:
+def _load_regime() -> dict[str, Any]:
     """Load persisted regime data from disk."""
     path = config().regime_data_path
     if not os.path.exists(path):
@@ -31,7 +31,7 @@ def _save_regime(regime: str, modifier: float) -> None:
     data = {
         "regime": regime,
         "modifier": modifier,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     }
     with open(path, "w") as f:
         json.dump(data, f, indent=2)
@@ -44,7 +44,7 @@ def _should_refresh() -> bool:
         return True
     try:
         last_update = datetime.fromisoformat(data["timestamp"])
-        return (datetime.now(timezone.utc) - last_update) > timedelta(hours=1)
+        return (datetime.now(UTC) - last_update) > timedelta(hours=1)
     except (ValueError, TypeError):
         return True
 
@@ -124,7 +124,7 @@ def update_regime() -> None:
         _save_regime(regime, modifier)
         log_general.info(f"Market regime updated: {regime} (modifier {modifier})")
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - RPC failure; fall back to NEUTRAL
         log_general.warning(f"Market regime: failed to update, falling back to NEUTRAL: {e}")
         _save_regime("NEUTRAL", 1.0)
 

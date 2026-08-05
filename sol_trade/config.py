@@ -1,6 +1,7 @@
 import json
 import os
-from typing import Any, Dict, List
+import sys
+from typing import Any
 
 from solana.rpc.async_api import AsyncClient
 from solders.keypair import Keypair
@@ -20,19 +21,19 @@ class Config:
         self.primary_mint: str = ""
         self.primary_mint_symbol: str = ""
         self.sol_mint: str = "So11111111111111111111111111111111111111112"
-        self.secondary_mints: List[str] = []
-        self.secondary_mint_symbols: List[str] = []
+        self.secondary_mints: list[str] = []
+        self.secondary_mint_symbols: list[str] = []
         self.price_update_seconds: int = 60
         self.trading_interval_minutes: int = 1
         self.max_slippage: int = 50
         self.strategy: str = "default"
         self.path = os.path.join(os.path.dirname(__file__), "..", "config.json")
         self._client: AsyncClient | None = None
-        self._decimals_cache: Dict[str, int] = {}
+        self._decimals_cache: dict[str, int] = {}
 
         # Whale Tracker (ENABLED by default)
         self.whale_tracking_enabled: bool = True
-        self.whale_wallets: Dict[str, List[str]] = {}
+        self.whale_wallets: dict[str, list[str]] = {}
         self.whale_poll_interval_minutes: int = 5
         self.whale_data_path: str = "data/whale_data.json"
 
@@ -52,7 +53,7 @@ class Config:
         self.load_config()
 
     def load_config(self):
-        default_config: Dict[str, Any] = {
+        default_config: dict[str, Any] = {
             "api_key": "",
             "jupiter_api_key": "",
             "private_key": "",
@@ -90,7 +91,7 @@ class Config:
 
         with open(self.path, "r") as file:
             try:
-                config_data: Dict[str, Any] = json.load(file)
+                config_data: dict[str, Any] = json.load(file)
             except json.JSONDecodeError as e:
                 raise ValueError(f"Error loading config: {e}") from e
 
@@ -145,9 +146,9 @@ class Config:
             # print(f"Using Wallet: {keypair.pubkey()}")
 
             return keypair
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             log_general.error(f"Error decoding private key: {e}")
-            exit(1)
+            sys.exit(1)
 
     @property
     def public_address(self) -> Pubkey:

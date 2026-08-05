@@ -91,21 +91,18 @@ def calc_entry_price(df):
 
 
 def calc_stoploss(df):
-    global strategy_instance
     sl = float(strategy_instance.stoploss)
     df["stoploss"] = df["close"].iat[-1] * (1 - (sl / 100))
     return df
 
 
 def calc_takeprofit(df):
-    global strategy_instance
     tp = float(strategy_instance.takeprofit)
     df["takeprofit"] = df["close"].iat[-1] * (1 + (tp / 100))
     return df
 
 
 def calc_trailing_stoploss(df):
-    global strategy_instance
     tsl = float(strategy_instance.trailing_stoploss)
     tslt = float(strategy_instance.trailing_stoploss_target)
 
@@ -121,8 +118,7 @@ def calc_trailing_stoploss(df):
             tracking_started = True
             highest_price = price
         if tracking_started:
-            if price > highest_price:
-                highest_price = price
+            highest_price = max(highest_price, price)
             stop_price = highest_price * (1 - tsl / 100)
             trailing_stop.append(stop_price)
         else:

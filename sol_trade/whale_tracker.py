@@ -2,9 +2,8 @@
 
 import json
 import os
-import time
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from solana.rpc.core import TokenAccountOpts
 from solders.pubkey import Pubkey
@@ -46,7 +45,7 @@ def _get_wallet_token_balance(wallet: str, token_mint: str) -> float:
     return total
 
 
-def _load_data() -> List[Dict[str, Any]]:
+def _load_data() -> list[dict[str, Any]]:
     """Load whale snapshot data from disk."""
     path = config().whale_data_path
     if not os.path.exists(path):
@@ -60,7 +59,7 @@ def _load_data() -> List[Dict[str, Any]]:
         return []
 
 
-def _save_data(data: List[Dict[str, Any]]) -> None:
+def _save_data(data: list[dict[str, Any]]) -> None:
     """Persist whale snapshot data to disk."""
     path = config().whale_data_path
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -83,14 +82,14 @@ def update_whale_data() -> None:
     latest_ts = max((e.get("ts") for e in existing_data), default=None)
     if latest_ts:
         try:
-            if (datetime.now(timezone.utc) - datetime.fromisoformat(latest_ts)) < timedelta(
+            if (datetime.now(UTC) - datetime.fromisoformat(latest_ts)) < timedelta(
                 minutes=cfg.whale_poll_interval_minutes
             ):
                 return
         except (ValueError, TypeError):
             pass  # unparseable timestamp -> poll anyway
 
-    timestamp = datetime.now(timezone.utc).isoformat()
+    timestamp = datetime.now(UTC).isoformat()
 
     for token_symbol, wallets in whale_wallets.items():
         # Resolve token mint from config
@@ -122,14 +121,14 @@ def update_whale_data() -> None:
                     "balance": round(balance, 6),
                 }
                 existing_data.append(snapshot)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - balance fetch failure; log and continue
                 log_general.warning(
                     f"Whale tracker: failed to fetch balance for wallet "
                     f"{wallet[:8]}... token {token_symbol}: {e}"
                 )
 
     # Prune: keep only last 24 hours of data to prevent unbounded growth
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    cutoff = (datetime.now(UTC) - timedelta(hours=24)).isoformat()
     existing_data = [entry for entry in existing_data if entry["ts"] >= cutoff]
     _save_data(existing_data)
 
@@ -159,7 +158,7 @@ def get_whale_signal(token_symbol: str) -> str:
     if len(token_data) < 2:
         return "NO_DATA"
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     # Evaluate multiple time windows: 1h, 4h, 24h
     windows = [
@@ -179,14 +178,14 @@ def get_whale_signal(token_symbol: str) -> str:
             continue
 
         # Group by wallet, find earliest and latest balance per wallet
-        wallet_snapshots: Dict[str, List[Dict[str, Any]]] = {}
+        wallet_snapshots: dict[str, list[dict[str, Any]]] = {}
         for entry in window_entries:
             wallet_snapshots.setdefault(entry["wallet"], []).append(entry)
 
         total_start_balance = 0.0
         total_end_balance = 0.0
 
-        for wallet, snapshots in wallet_snapshots.items():
+        for snapshots in wallet_snapshots.values():
             sorted_snapshots = sorted(snapshots, key=lambda s: s["ts"])
             total_start_balance += sorted_snapshots[0]["balance"]
             total_end_balance += sorted_snapshots[-1]["balance"]

@@ -1,7 +1,7 @@
 import pandas as pd
 
 from sol_trade.config import config
-from sol_trade.strategy import ema, sma, rsi
+from sol_trade.strategy import ema, rsi, sma
 
 from .base_strategy import BaseStrategy
 

@@ -1,26 +1,27 @@
-from sol_trade.wallet import find_balance
-from sol_trade.config import config
-from sol_trade.trading import start_trading
-from sol_trade.log import log_general, silence_console_logging
+import os
+import shutil
+import subprocess
+import sys
+
 from prompt_toolkit import Application
+from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import Layout
-from prompt_toolkit.widgets import Dialog, Button
 from prompt_toolkit.layout.containers import HSplit, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
-from prompt_toolkit.styles import Style
 from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.key_binding import KeyBindings
-import shutil
-import subprocess  
-import os     
+from prompt_toolkit.styles import Style
+from prompt_toolkit.widgets import Button, Dialog
+
+from sol_trade.config import config
+from sol_trade.log import log_general, silence_console_logging
+from sol_trade.trading import start_trading
+from sol_trade.wallet import find_balance
 
 config()
 
 
 def check_json_state() -> bool:
-    if config().keypair and config().secondary_mints:
-        return True
-    return False
+    return bool(config().keypair and config().secondary_mints)
 
 
 splash = r"""
@@ -39,7 +40,7 @@ def center_text(text, width):
 
 
 def get_layout():
-    terminal_width, terminal_height = shutil.get_terminal_size()
+    terminal_width, _ = shutil.get_terminal_size()
 
     centered_splash = center_text(splash, terminal_width)
     centered_welcome = "Welcome to SolTrade! Select an option to proceed:".center(
@@ -128,7 +129,7 @@ app.output.hide_cursor()
 result = app.run()
 
 if result == "start_trading":
-    subprocess.run("cls" if os.name == "nt" else "clear", shell=True)
+    subprocess.run("cls" if os.name == "nt" else "clear", shell=True, check=False)
     silence_console_logging()
     can_run = check_json_state()
 
@@ -136,14 +137,14 @@ if result == "start_trading":
         log_general.info(
             f"SolTrade has detected {find_balance(config().primary_mint)} {config().primary_mint_symbol} tokens available for trading."
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - balance fetch failure; log and exit
         log_general.error(f"Error finding {config().primary_mint_symbol} balance: {e}")
-        exit()
+        sys.exit()
 
     if can_run:
         log_general.debug("SolTrade has successfully imported the API requirements.")
         start_trading()
     else:
-        exit()
+        sys.exit()
 elif not result:
-    exit()
+    sys.exit()

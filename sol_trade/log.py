@@ -1,8 +1,9 @@
 import logging
-import sys
 import os
+import sys
 from logging import StreamHandler
 from logging.handlers import RotatingFileHandler
+from typing import ClassVar
 
 
 # Custom formatter to support colors in console
@@ -15,7 +16,7 @@ class CustomFormatter(logging.Formatter):
     reset = "\x1b[0m"
     format = "%(asctime)s       %(message)s"
 
-    FORMATS = {
+    FORMATS: ClassVar[dict[int, str]] = {
         logging.DEBUG: grey + format + reset,
         logging.INFO: green + format + reset,
         logging.WARNING: yellow + format + reset,

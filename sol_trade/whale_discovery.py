@@ -1,8 +1,7 @@
 """Whale discovery helper — find top token holders to track."""
 
-import json
 import sys
-from typing import List, Dict, Any
+from typing import Any
 
 from solders.pubkey import Pubkey
 
@@ -12,7 +11,7 @@ from sol_trade.utils import handle_rate_limiting, run_async
 
 
 @handle_rate_limiting(retry_attempts=3, retry_delay=10)
-def find_top_holders(token_mint: str, limit: int = 20) -> List[Dict[str, Any]]:
+def find_top_holders(token_mint: str, limit: int = 20) -> list[dict[str, Any]]:
     """Query RPC for top token holders.
 
     Uses get_token_largest_accounts which is more efficient than
@@ -78,7 +77,7 @@ def main() -> None:
         print("    ]")
         print("  }")
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - CLI failure; log and exit
         log_general.error(f"Failed to fetch holders: {e}")
         sys.exit(1)
 

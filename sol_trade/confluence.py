@@ -4,7 +4,6 @@ Adjusts position sizing based on whale signals, market regime,
 and sentiment circuit breaker state.
 """
 
-from typing import Dict
 
 import pandas as pd
 
@@ -18,12 +17,14 @@ def _is_protective_exit(df: "pd.DataFrame") -> bool:
         return True
     if "takeprofit" in df.columns and pd.notna(last["takeprofit"]) and last["close"] >= last["takeprofit"]:
         return True
-    if "trailing_stoploss" in df.columns and pd.notna(last["trailing_stoploss"]) and last["close"] <= last["trailing_stoploss"]:
-        return True
-    return False
+    return (
+        "trailing_stoploss" in df.columns
+        and pd.notna(last["trailing_stoploss"])
+        and last["close"] <= last["trailing_stoploss"]
+    )
 
 
-def evaluate_buy_confluence(ta_signal: str, token_symbol: str) -> Dict[str, object]:
+def evaluate_buy_confluence(ta_signal: str, token_symbol: str) -> dict[str, object]:
     """Evaluate confluence for a buy signal.
 
     Returns:
@@ -41,7 +42,7 @@ def evaluate_buy_confluence(ta_signal: str, token_symbol: str) -> Dict[str, obje
 
     # Check sentiment circuit breaker first
     if cfg.sentiment_enabled:
-        from sol_trade.sentiment import is_token_blocked, is_market_crash
+        from sol_trade.sentiment import is_market_crash, is_token_blocked
 
         if is_token_blocked(token_symbol):
             return {
@@ -85,7 +86,7 @@ def evaluate_buy_confluence(ta_signal: str, token_symbol: str) -> Dict[str, obje
     }
 
 
-def evaluate_sell_confluence(ta_signal: str, token_symbol: str) -> Dict[str, object]:
+def evaluate_sell_confluence(ta_signal: str, token_symbol: str) -> dict[str, object]:
     """Evaluate confluence for a sell signal.
 
     Returns:
@@ -151,7 +152,7 @@ def _get_regime_modifier() -> float:
         return 1.0
 
 
-def _buy_decision_matrix(ta_signal: str, whale_signal: str) -> Dict[str, object]:
+def _buy_decision_matrix(ta_signal: str, whale_signal: str) -> dict[str, object]:
     """Buy decision matrix based on TA signal and whale activity.
 
     | TA    | Whale          | Action | Size |
@@ -171,7 +172,7 @@ def _buy_decision_matrix(ta_signal: str, whale_signal: str) -> Dict[str, object]
         return {"size_modifier": 0.5, "reason": "whales_neutral"}
 
 
-def _sell_decision_matrix(ta_signal: str, whale_signal: str) -> Dict[str, object]:
+def _sell_decision_matrix(ta_signal: str, whale_signal: str) -> dict[str, object]:
     """Sell decision matrix based on TA signal and whale activity.
 
     | TA    | Whale          | Action  | Size |

@@ -2,8 +2,8 @@
 
 import json
 import os
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import requests
 
@@ -22,7 +22,7 @@ _NEGATIVE_KEYWORDS = {
 }
 
 
-def _load_sentiment_data() -> Dict[str, Any]:
+def _load_sentiment_data() -> dict[str, Any]:
     """Load sentiment data from disk."""
     path = config().sentiment_data_path
     if not os.path.exists(path):
@@ -35,7 +35,7 @@ def _load_sentiment_data() -> Dict[str, Any]:
         return {}
 
 
-def _save_sentiment_data(data: Dict[str, Any]) -> None:
+def _save_sentiment_data(data: dict[str, Any]) -> None:
     """Persist sentiment data to disk."""
     path = config().sentiment_data_path
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -88,7 +88,7 @@ def _compute_token_sentiment(token_symbol: str) -> float:
                 pos, neg = _score_text(text)
                 total_pos += pos
                 total_neg += neg
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - fetch failure; log and continue
             log_general.warning(
                 f"Sentiment: failed to fetch {subreddit}: {e}"
             )
@@ -101,7 +101,7 @@ def _compute_token_sentiment(token_symbol: str) -> float:
     return (total_pos - total_neg) / total
 
 
-def update_sentiment(token_symbols: List[str]) -> None:
+def update_sentiment(token_symbols: list[str]) -> None:
     """Fetch sentiment data for all tracked tokens."""
     cfg = config()
     if not cfg.sentiment_enabled:
@@ -111,7 +111,7 @@ def update_sentiment(token_symbols: List[str]) -> None:
         return
 
     existing_data = _load_sentiment_data()
-    timestamp = datetime.now(timezone.utc).isoformat()
+    timestamp = datetime.now(UTC).isoformat()
 
     for symbol in token_symbols:
         try:
@@ -126,7 +126,7 @@ def update_sentiment(token_symbols: List[str]) -> None:
                 try:
                     block_time = datetime.fromisoformat(blocked_since)
                     expiry = block_time + timedelta(hours=cfg.sentiment_pause_hours)
-                    if datetime.now(timezone.utc) >= expiry:
+                    if datetime.now(UTC) >= expiry:
                         # Block expired
                         blocked_since = None
                 except (ValueError, TypeError):
@@ -145,7 +145,7 @@ def update_sentiment(token_symbols: List[str]) -> None:
                 "blocked_since": blocked_since,
                 "last_check": timestamp,
             }
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - scoring failure; log and continue
             log_general.warning(
                 f"Sentiment: failed to compute score for {symbol}: {e}"
             )
@@ -184,7 +184,7 @@ def is_token_blocked(token_symbol: str) -> bool:
     try:
         block_time = datetime.fromisoformat(blocked_since)
         expiry = block_time + timedelta(hours=cfg.sentiment_pause_hours)
-        return datetime.now(timezone.utc) < expiry
+        return datetime.now(UTC) < expiry
     except (ValueError, TypeError):
         return False
 
@@ -204,7 +204,7 @@ def is_market_crash() -> bool:
         return False
 
     # Check if all tokens are below crash threshold
-    for symbol, entry in data.items():
+    for entry in data.values():
         score = entry.get("score", 0.0)
         if score >= cfg.sentiment_crash_threshold:
             return False  # At least one token is not crashed

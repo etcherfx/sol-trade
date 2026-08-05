@@ -9,6 +9,10 @@ from sol_trade.config import config
 from sol_trade.log import log_general, log_transaction
 
 
+class OrderError(Exception):
+    """Raised when the Jupiter API returns an invalid order response."""
+
+
 class MarketPosition:
     def __init__(self, path):
         self.path = path
@@ -86,12 +90,12 @@ async def execute_order(order_response: dict) -> dict:
         if "errorCode" in order_response:
             error_msg = order_response.get("errorMessage", "Unknown error")
             log_transaction.error(f"Order failed: {error_msg}")
-            raise Exception(f"Order error: {error_msg}")
+            raise OrderError(f"Order error: {error_msg}")
         
         transaction_b64 = order_response.get("transaction")
         if not transaction_b64:
             log_transaction.error("No transaction returned in order response")
-            raise Exception("No transaction in order response")
+            raise OrderError("No transaction in order response")
         
         request_id = order_response["requestId"]
         
@@ -147,7 +151,7 @@ async def perform_swap(
     order = execute_result = None
     is_tx_successful = False
 
-    for i in range(0, 3):
+    for i in range(3):
         if not is_tx_successful:
             try:
                 order = await create_order(
@@ -163,7 +167,7 @@ async def perform_swap(
                     log_general.warning(
                         f"SolTrade failed to complete transaction {i}. Error: {execute_result.get('error')}. Retrying."
                     )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - retry loop
                 log_general.warning(
                     f"SolTrade failed to complete transaction {i}. Retrying. Error: {e}"
                 )

@@ -1,27 +1,29 @@
 import asyncio
 import os
+import sys
+import time
+from datetime import UTC, datetime
+from typing import Any, cast
+
 import pandas as pd
 import requests
-import time
-from datetime import datetime
-from typing import Any, Dict, List, Optional, cast
-from rich.console import Console, Group, RenderableType
-from rich.table import Table
-from rich.panel import Panel
-from rich.live import Live
-from rich.text import Text
 from rich import box
+from rich.console import Console, Group, RenderableType
+from rich.live import Live
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
 
 from sol_trade.config import config
 from sol_trade.confluence import _is_protective_exit
 from sol_trade.log import log_general, log_transaction, silence_console_logging
 from sol_trade.strategy import (
-    strategy,
-    calc_stoploss,
-    calc_trailing_stoploss,
     calc_entry_price,
+    calc_stoploss,
     calc_takeprofit,
+    calc_trailing_stoploss,
     set_position,
+    strategy,
 )
 from sol_trade.transactions import perform_swap
 from sol_trade.wallet import find_balance
@@ -29,8 +31,8 @@ from sol_trade.wallet import find_balance
 config_instance = config()
 primary_mint: str = config_instance.primary_mint
 primary_mint_symbol: str = config_instance.primary_mint_symbol
-secondary_mints: List[str] = config_instance.secondary_mints
-secondary_mint_symbols: List[str] = config_instance.secondary_mint_symbols
+secondary_mints: list[str] = config_instance.secondary_mints
+secondary_mint_symbols: list[str] = config_instance.secondary_mint_symbols
 api_key: str = config_instance.api_key
 trading_interval_minutes: int = config_instance.trading_interval_minutes
 price_update_seconds: int = config_instance.price_update_seconds
@@ -51,7 +53,7 @@ class BalanceCache:
     """Lazy balance fetcher that caches until explicitly invalidated."""
 
     def __init__(self) -> None:
-        self._cache: Dict[str, float] = {}
+        self._cache: dict[str, float] = {}
 
     def get(self, mint: str) -> float:
         if mint not in self._cache:
@@ -65,7 +67,7 @@ class BalanceCache:
 _balance_cache = BalanceCache()
 
 
-def fetch_prices(mints: List[str]) -> Dict[str, float]:
+def fetch_prices(mints: list[str]) -> dict[str, float]:
     """Fetch multiple token prices with a single HTTP call."""
     if not mints:
         return {}
@@ -77,7 +79,7 @@ def fetch_prices(mints: List[str]) -> Dict[str, float]:
     try:
         response = _http_session.get(url, params=params, timeout=10)
         response.raise_for_status()
-        response_json = cast(Dict[str, Any], response.json())
+        response_json = cast(dict[str, Any], response.json())
     except requests.exceptions.HTTPError as e:
         if e.response is not None and e.response.status_code == 401:
             log_general.error(
@@ -86,13 +88,13 @@ def fetch_prices(mints: List[str]) -> Dict[str, float]:
         else:
             log_general.error(f"HTTP error fetching prices for {unique_mints}: {e}")
         return {mint: 0.0 for mint in unique_mints}
-    except Exception as e:  # pragma: no cover - network errors
+    except Exception as e:  # pragma: no cover - network errors  # noqa: BLE001
         log_general.error(f"Failed to fetch prices for {unique_mints}: {e}")
         return {mint: 0.0 for mint in unique_mints}
 
     prices: dict[str, float] = {}
     for mint in unique_mints:
-        mint_data = cast(Dict[str, Any], response_json.get(mint, {}) or {})
+        mint_data = cast(dict[str, Any], response_json.get(mint, {}) or {})
         price = float(mint_data.get("usdPrice") or 0)
         if price == 0:
             log_general.debug(f"Price for {mint} missing from response; defaulting to 0")
@@ -107,14 +109,14 @@ initial_primary_price = initial_price_map.get(primary_mint, 0.0)
 initial_secondary_prices = [initial_price_map.get(mint, 0.0) for mint in secondary_mints]
 
 console = Console()
-live_display: Optional[Live] = None
+live_display: Live | None = None
 
 
-def fetch_candlestick(primary_mint_symbol: str, secondary_mint_symbol: str) -> Dict[str, Any]:
+def fetch_candlestick(primary_mint_symbol: str, secondary_mint_symbol: str) -> dict[str, Any]:
     """Fetch candlestick data from CryptoCompare API."""
     url = "https://min-api.cryptocompare.com/data/v2/histominute"
     headers = {"authorization": api_key}
-    params: Dict[str, str | int] = {
+    params: dict[str, str | int] = {
         "tsym": primary_mint_symbol,
         "fsym": secondary_mint_symbol,
         "limit": 50,
@@ -123,18 +125,18 @@ def fetch_candlestick(primary_mint_symbol: str, secondary_mint_symbol: str) -> D
     try:
         response = _http_session.get(url, headers=headers, params=params, timeout=10)
         response.raise_for_status()
-        response_json = cast(Dict[str, Any], response.json())
+        response_json = cast(dict[str, Any], response.json())
         if response_json.get("Response") == "Error":
             log_general.error(response_json.get("Message"))
-            exit()
+            sys.exit()
         return response_json
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - candlestick fetch failure
         log_general.error(f"Failed to fetch candlestick data: {e}")
-        exit()
+        sys.exit()
 
 
 def format_as_money(value: float) -> str:
-    return "${:,.2f}".format(value)
+    return f"${value:,.2f}"
 
 
 def _render_dashboard(wallet_panel: Panel, market_table: Table, countdown_text: str) -> Group:
@@ -152,7 +154,7 @@ def _update_live(renderable: RenderableType) -> None:
 
 
 def perform_analysis() -> None:
-    data_frames: List[pd.DataFrame] = []
+    data_frames: list[pd.DataFrame] = []
     price_map = fetch_prices([primary_mint, *secondary_mints])
 
     for secondary_mint, secondary_mint_symbol in zip(
@@ -196,7 +198,7 @@ def perform_analysis() -> None:
             from sol_trade.whale_tracker import update_whale_data
 
             update_whale_data()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - optional feature failure; log and continue
             log_general.warning(f"Whale tracker update failed: {e}")
 
     # Update market regime (only if stale)
@@ -205,7 +207,7 @@ def perform_analysis() -> None:
             from sol_trade.market_regime import update_regime
 
             update_regime()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - optional feature failure; log and continue
             log_general.warning(f"Market regime update failed: {e}")
 
     # Update sentiment data (only if stale)
@@ -214,7 +216,7 @@ def perform_analysis() -> None:
             from sol_trade.sentiment import update_sentiment
 
             update_sentiment(secondary_mint_symbols)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - optional feature failure; log and continue
             log_general.warning(f"Sentiment update failed: {e}")
 
     combined_df: pd.DataFrame = pd.concat(data_frames, axis=0)
@@ -295,7 +297,7 @@ def perform_analysis() -> None:
     price_row = cast(pd.Series, last_rows_pivoted.loc["Price"])
     last_rows_pivoted.loc["Price"] = price_row.apply(format_as_money)  # pyright: ignore[reportGeneralTypeIssues]
 
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     
     market_table = Table(
         title=f"📊 [bold cyan]Market Analysis[/bold cyan] [dim]({timestamp})[/dim]", 
@@ -357,7 +359,7 @@ def handle_buy_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: str
 
         # Check sentiment circuit breaker
         if sentiment_enabled:
-            from sol_trade.sentiment import is_token_blocked, is_market_crash
+            from sol_trade.sentiment import is_market_crash, is_token_blocked
 
             if is_token_blocked(secondary_mint_symbol):
                 log_transaction.info(
@@ -366,7 +368,7 @@ def handle_buy_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: str
                 return False
             if is_market_crash():
                 log_transaction.info(
-                    f"All new entries paused: market sentiment crash detected"
+                    "All new entries paused: market sentiment crash detected"
                 )
                 return False
 
@@ -505,7 +507,7 @@ def save_dataframe_to_csv(df: pd.DataFrame, file_path: str) -> None:
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         df.to_csv(file_path, index=False)
         log_general.info(f"Data successfully saved to {file_path}")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - data save failure; log and continue
         log_general.error(f"Failed to save data to {file_path}: {e}")
 
 
