@@ -8,7 +8,7 @@ from solders.pubkey import Pubkey
 
 from sol_trade.config import config
 from sol_trade.log import log_general
-from sol_trade.utils import handle_rate_limiting
+from sol_trade.utils import handle_rate_limiting, run_async
 
 
 @handle_rate_limiting(retry_attempts=3, retry_delay=10)
@@ -28,7 +28,7 @@ def find_top_holders(token_mint: str, limit: int = 20) -> List[Dict[str, Any]]:
     cfg = config()
     mint_pubkey = Pubkey.from_string(token_mint)
 
-    response = cfg.client.get_token_largest_accounts(mint_pubkey)
+    response = run_async(cfg.client.get_token_largest_accounts(mint_pubkey))
     accounts = response.value
 
     holders = []

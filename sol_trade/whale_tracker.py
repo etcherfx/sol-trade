@@ -6,12 +6,12 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
-from solana.rpc.types import TokenAccountOpts
+from solana.rpc.core import TokenAccountOpts
 from solders.pubkey import Pubkey
 
 from sol_trade.config import config
 from sol_trade.log import log_general
-from sol_trade.utils import handle_rate_limiting
+from sol_trade.utils import handle_rate_limiting, run_async
 
 
 @handle_rate_limiting(retry_attempts=3, retry_delay=10)
@@ -20,17 +20,16 @@ def _get_wallet_token_balance(wallet: str, token_mint: str) -> float:
     cfg = config()
     # Handle native SOL
     if token_mint == cfg.sol_mint:
-        response = cfg.client.get_balance(Pubkey.from_string(wallet))
+        response = run_async(cfg.client.get_balance(Pubkey.from_string(wallet)))
         balance = response.value / (10**9)
         return balance
 
-    response = (
+    response = run_async(
         cfg.client.get_token_accounts_by_owner_json_parsed(
             Pubkey.from_string(wallet),
             TokenAccountOpts(mint=Pubkey.from_string(token_mint)),
         )
-        .to_json()
-    )
+    ).to_json()
     json_response = json.loads(response)
     accounts = json_response.get("result", {}).get("value", [])
     if not accounts:

@@ -2,11 +2,12 @@ import json
 import os
 from typing import Any, Dict, List
 
-from solana.rpc.api import Client
+from solana.rpc.async_api import AsyncClient
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 
 from sol_trade.log import log_general
+from sol_trade.utils import run_async
 
 
 class Config:
@@ -26,7 +27,7 @@ class Config:
         self.max_slippage: int = 50
         self.strategy: str = "default"
         self.path = os.path.join(os.path.dirname(__file__), "..", "config.json")
-        self._client: Client | None = None
+        self._client: AsyncClient | None = None
         self._decimals_cache: Dict[str, int] = {}
 
         # Whale Tracker (ENABLED by default)
@@ -123,8 +124,10 @@ class Config:
         if mint_address in self._decimals_cache:
             return self._decimals_cache[mint_address]
         
-        response = self.client.get_account_info_json_parsed(
-            Pubkey.from_string(mint_address)
+        response = run_async(
+            self.client.get_account_info_json_parsed(
+                Pubkey.from_string(mint_address)
+            )
         ).to_json()
         json_response = json.loads(response)
         value = (
@@ -151,10 +154,10 @@ class Config:
         return self.keypair.pubkey()
 
     @property
-    def client(self) -> Client:
+    def client(self) -> AsyncClient:
         """Cached RPC client to avoid creating new connections."""
         if self._client is None:
-            self._client = Client(self.rpc_https)
+            self._client = AsyncClient(self.rpc_https)
         return self._client
 
 
