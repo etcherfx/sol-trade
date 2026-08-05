@@ -6,111 +6,66 @@
 
 [![License](https://img.shields.io/github/license/etcherfx/sol-trade?style=for-the-badge)](https://github.com/etcherfx/sol-trade/blob/main/LICENSE)
 [![GitHub issues](https://img.shields.io/github/issues/etcherfx/sol-trade?style=for-the-badge)](https://github.com/etcherfx/sol-trade/issues)
+[![GitHub forks](https://img.shields.io/github/forks/etcherfx/sol-trade?style=for-the-badge)](https://github.com/etcherfx/sol-trade/network)
 [![GitHub Release](https://img.shields.io/github/release/etcherfx/sol-trade?include_prereleases&style=for-the-badge)](https://github.com/etcherfx/sol-trade/releases/latest)
 
-**Automated trading for Solana.** SolTrade watches the tokens you choose, runs technical
-analysis on every trading interval, and enters and exits positions for you — with optional
-whale tracking, sentiment filters, and market-aware position sizing.
+**Automated trading for Solana.**
 
 A hard fork of [noahtheprogrammer/soltrade](https://github.com/noahtheprogrammer/soltrade).
 
 </div>
 
 > [!WARNING]
-> SolTrade trades **real money** on Solana mainnet. Start with small amounts you can afford
-> to lose, and test with a new wallet before trusting it with anything meaningful. This
-> software is not financial advice — you are responsible for your own trades.
+> SolTrade trades **real money** on Solana mainnet. Start with small amounts you can afford to lose, test with a new wallet first, and never risk funds you can't spare. Not financial advice — you are responsible for your own trades.
 
-## Table of contents
+## Links
 
-- [Quick start](#quick-start)
-- [How it works](#how-it-works)
-- [Features](#features)
-- [Configuration](#configuration)
-- [Advanced features in depth](#advanced-features-in-depth)
-- [Installation](#installation)
-- [Custom strategies](#custom-strategies)
-- [FAQ](#faq)
-- [Glossary](#glossary)
-- [Support](#support)
-- [Disclaimer](#disclaimer)
+- [Releases](https://github.com/etcherfx/sol-trade/releases)
 
-## Quick start
+## Quick Start
 
-1. Install [uv](https://docs.astral.sh/uv/) (Python runtime manager — the only requirement).
-2. Clone the repo and copy the sample config:
+1. Install [uv](https://docs.astral.sh/uv/).
+
+   ```powershell
+   # Windows
+   powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+   ```
+
+   ```bash
+   # Linux / macOS
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+   ```
+
+2. Clone the repository and create the configuration file.
+
    ```bash
    git clone https://github.com/etcherfx/sol-trade.git
    cd sol-trade
    cp config.json.sample config.json
    ```
-3. Open `config.json` and fill in the essentials (see [Configuration](#configuration)):
-   - `private_key` — your Solana wallet's private key
+
+3. Set the required settings in `config.json`:
+
+   - `private_key` — your Solana wallet private key
    - `api_key` — your [CryptoCompare](https://www.cryptocompare.com/cryptopian/api-keys) API key
    - `secondary_mints` / `secondary_mint_symbols` — the token(s) you want to trade
-4. Run it:
+
+4. Start the bot.
+
    ```bash
    uv run main.py
    ```
 
-That's it. `uv` creates the environment from the lockfile, installs everything, and starts
-the bot. The first run fetches market data, takes a snapshot of your balances, and begins
-analyzing every `trading_interval_minutes`.
-
-## How it works
-
-SolTrade runs a simple loop:
-
-1. **Fetch** fresh prices and candlesticks for every configured token.
-2. **Analyze** — your strategy computes indicators (EMA, RSI, Bollinger Bands by default)
-   and produces `entry` / `exit` signals.
-3. **Act** — buy signals open a position; sell signals, stop-losses, take-profits, and
-   trailing stops close it. Every trade is routed through Jupiter's Swap API.
-4. **Protect** — open positions are tracked with a stop-loss, take-profit, and trailing
-   stop, and persisted to disk so a restart picks up where you left off.
-
-Optional layers sit between the signal and the trade: whale tracking, a confluence sizing
-filter, market regime detection, and a sentiment circuit breaker (all detailed in
-[Advanced features](#advanced-features-in-depth)).
-
-## Features
-
-**Core**
-
-- **Technical analysis** — EMA, RSI, and Bollinger Bands out of the box, computed in pure
-  Python (no C libraries to install).
-- **Multiple tokens** — trade several tokens at once instead of waiting for one.
-- **Automatic position management** — stop-loss, take-profit, and trailing stop on every
-  position.
-- **Custom strategies** — drop in your own strategy file with your own indicators and rules
-  (see [Custom strategies](#custom-strategies)).
-
-**Advanced — on by default**
-
-- **Whale wallet tracking** — watches wallets you configure, detects accumulation or
-  dumping, and feeds that into trade decisions.
-- **Confluence filter** — sizes every trade based on whale activity, market regime, and
-  sentiment.
-
-**Advanced — opt-in**
-
-- **Market regime detection** — reads the SOL/USDC trend to scale positions in bearish
-  markets.
-- **Sentiment circuit breaker** — pauses trading when social sentiment on a token crashes.
-
 ## Configuration
 
-### 1. Create your config
+SolTrade reads its configuration from `config.json` in the project root. Copy `config.json.sample` to `config.json` to create the configuration file.
 
-Copy `config.json.sample` to `config.json` and edit it. The bot reads `config.json` from
-the project root — make sure you keep it there.
-
-### 2. Core settings
+### Core settings
 
 | Setting | What it does | Default |
 | --- | --- | --- |
-| `private_key` | Your Solana wallet private key (base58) | — (required) |
-| `api_key` | CryptoCompare API key, used for candlestick data | — (required) |
+| `private_key` | Solana wallet private key (base58) | — *(required)* |
+| `api_key` | CryptoCompare API key, used for candlestick data | — *(required)* |
 | `rpc_https` | Solana RPC endpoint for balances and token data | `https://api.mainnet-beta.solana.com` |
 | `jup_api` | Jupiter Swap API endpoint | `https://api.jup.ag/swap/v2` |
 | `jupiter_api_key` | Jupiter API key — optional, sent only if set | — |
@@ -121,7 +76,7 @@ the project root — make sure you keep it there.
 | `max_slippage` | Maximum accepted slippage in BPS (100 BPS = 1%) | `50` |
 | `strategy` | The strategy to trade with | `default` |
 
-### 3. Advanced feature settings
+### Advanced settings
 
 | Setting | What it does | Default |
 | --- | --- | --- |
@@ -135,12 +90,38 @@ the project root — make sure you keep it there.
 | `sentiment_threshold` | Per-token block threshold (-1 to +1) | `-0.5` |
 | `sentiment_crash_threshold` | Market-wide crash threshold (-1 to +1) | `-0.7` |
 
-## Advanced features in depth
+## How it works
+
+SolTrade runs a continuous loop:
+
+1. **Fetch** — retrieve fresh prices and candlesticks for every configured token.
+2. **Analyze** — the active strategy computes indicators (EMA, RSI, and Bollinger Bands by default) and produces `entry` / `exit` signals.
+3. **Act** — buy signals open a position; sell signals, stop-losses, take-profits, and trailing stops close it. Every trade is routed through Jupiter's Swap API.
+4. **Protect** — open positions are tracked and persisted to disk, so a restart resumes where it left off.
+
+Optional layers — whale tracking, a confluence sizing filter, market regime detection, and a sentiment circuit breaker — operate between the signal and the trade. See [Advanced features](#advanced-features) for details.
+
+## Features
+
+| Feature | What it does |
+| --- | --- |
+| Technical analysis | EMA, RSI, and Bollinger Bands out of the box — pure Python, no C libraries |
+| Multiple tokens | Trade several tokens in the same loop |
+| Position management | Stop-loss, take-profit, and trailing stop on every position |
+| Custom strategies | Drop in your own strategy file |
+| Whale tracking | Watches configured wallets for accumulation or dumping |
+| Confluence filter | Sizes every trade from whale activity, market regime, and sentiment |
+| Market regime | Scales positions down in bearish markets *(opt-in)* |
+| Sentiment breaker | Pauses trading when social sentiment crashes *(opt-in)* |
+
+## Advanced features
+
+<details>
+<summary><b>How whale tracking, the confluence filter, market regime, and sentiment work</b></summary>
 
 ### Whale wallet tracking
 
-The tracker polls the wallets in `whale_wallets` every `whale_poll_interval_minutes` and
-compares balances over 1h, 4h, and 24h windows to produce a per-token signal:
+The tracker polls the wallets in `whale_wallets` every `whale_poll_interval_minutes` minutes and compares balances over 1-hour, 4-hour, and 24-hour windows:
 
 | Signal | Meaning |
 | --- | --- |
@@ -155,21 +136,16 @@ compares balances over 1h, 4h, and 24h windows to produce a per-token signal:
 }
 ```
 
-**Finding wallets to track** — SolTrade ships a discovery CLI that lists the top holders of
-any token:
+Top token holders can be discovered with the built-in CLI:
 
 ```bash
 uv run -m sol_trade.whale_discovery TOKEN_MINT [LIMIT]
-```
-
-```bash
 uv run -m sol_trade.whale_discovery So11111111111111111111111111111111111111112 10
 ```
 
 ### Confluence filter
 
-Every trade passes through the confluence gate before execution. It combines the whale
-signal with market regime and sentiment to decide *how much* to trade:
+The filter combines the whale signal, market regime, and sentiment to determine position size:
 
 | TA Signal | Whale Activity | Action | Position Size |
 | --- | --- | --- | --- |
@@ -181,18 +157,13 @@ signal with market regime and sentiment to decide *how much* to trade:
 | SELL | ACCUMULATING | Partial exit | 50% |
 
 > [!NOTE]
-> With no whale wallets configured (or while the tracker is still collecting snapshots),
-> trades pass at full size. The matrix above only applies once wallets are set up and at
-> least two snapshots exist.
+> With no whale wallets configured (or while the tracker is still collecting snapshots), trades pass at full size. The matrix only applies once wallets are set up and at least two snapshots exist.
 
-In bearish market regimes, all position sizes are additionally reduced by 50%. Protective
-exits (stop-loss, take-profit, trailing stop) always execute at 100% regardless of the
-confluence state.
+In bearish regimes, all position sizes drop an additional 50%. Protective exits (stop-loss, take-profit, trailing stop) always execute at 100%.
 
 ### Market regime detection
 
-Uses the SOL/USDC daily trend (20-day SMA) and DEX volume to classify the market, then
-scales entries accordingly:
+The market is classified from the SOL/USDC daily trend (20-day SMA) and DEX volume, and entries are scaled accordingly:
 
 | Regime | Condition | Position Modifier |
 | --- | --- | --- |
@@ -200,46 +171,19 @@ scales entries accordingly:
 | NEUTRAL | Mixed signals | 1.0x |
 | BEARISH | Price below 20-day SMA + falling volume | 0.5x |
 
-Enable with `"market_regime_enabled": true`.
+This feature is enabled by setting `"market_regime_enabled": true` in `config.json`.
 
 ### Sentiment circuit breaker
 
-Pulls social sentiment from Reddit for the tokens you track. If sentiment drops below the
-threshold, trading for that token pauses automatically:
+The breaker polls social sentiment from Reddit for the tracked tokens and pauses trading when sentiment collapses:
 
 - **Token pause** — a token is blocked when its score drops below `sentiment_threshold`.
-- **Market crash** — all new entries pause when every tracked token is below
-  `sentiment_crash_threshold`.
+- **Market crash** — all new entries pause when every tracked token is below `sentiment_crash_threshold`.
 - **Recovery** — blocks expire automatically after `sentiment_pause_hours`.
 
-Enable with `"sentiment_enabled": true`.
+This feature is enabled by setting `"sentiment_enabled": true` in `config.json`.
 
-## Installation
-
-SolTrade only requires [uv](https://docs.astral.sh/uv/). Everything else — including
-Python itself — is managed automatically from the committed lockfile.
-
-**Windows**
-
-```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-```
-
-**Linux / macOS**
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-Then, from the project root:
-
-```bash
-uv run main.py
-```
-
-> [!TIP]
-> `uv sync` is run automatically by `uv run` — you never need to set up a virtual
-> environment by hand.
+</details>
 
 ## Custom strategies
 
@@ -247,15 +191,15 @@ uv run main.py
 > Strategy names must be a single word, lowercase — `momentum`, `trendline`, etc.
 
 1. Create `strategies/{name}_strategy.py`.
-2. Define a class `{Name}Strategy(BaseStrategy)` with:
-   - `__init__(self, df)` — store `self.df`, and set the risk parameters:
-     `stoploss`, `takeprofit`, `trailing_stoploss`, `trailing_stoploss_target` (percentages).
-   - `apply_strategy(self)` — compute indicators, then set `self.df["entry"] = 1` on bars
-     that should buy and `self.df["exit"] = 1` on bars that should sell.
+2. Define a class `{Name}Strategy(BaseStrategy)` with the following methods:
+   - `__init__(self, df)` — store `self.df` and set the risk parameters `stoploss`, `takeprofit`, `trailing_stoploss`, and `trailing_stoploss_target` (percentages).
+   - `apply_strategy(self)` — compute indicators, then set `self.df["entry"] = 1` on bars that should buy and `self.df["exit"] = 1` on bars that should sell.
 3. Set `"strategy": "{name}"` in `config.json`.
 
-Indicators are available from `sol_trade.strategy` — pure-python, TA-Lib-equivalent
-implementations of `ema`, `sma`, and `rsi`:
+Indicators (`ema`, `sma`, `rsi`) are available from `sol_trade.strategy` — pure-Python, TA-Lib-equivalent implementations.
+
+<details>
+<summary><b>Example — a momentum strategy</b></summary>
 
 ```python
 # strategies/momentum_strategy.py
@@ -276,12 +220,10 @@ class MomentumStrategy(BaseStrategy):
 
     def apply_strategy(self):
         if config().strategy == "momentum":
-            # Indicators
             self.df["ema_fast"] = ema(self.df["close"], 8)
             self.df["ema_slow"] = ema(self.df["close"], 21)
             self.df["rsi"] = rsi(self.df["close"], 14)
 
-            # Signals
             entry = (self.df["ema_fast"] > self.df["ema_slow"]) & (self.df["rsi"] <= 40)
             exit_ = (self.df["ema_fast"] < self.df["ema_slow"]) | (self.df["rsi"] >= 70)
 
@@ -291,26 +233,23 @@ class MomentumStrategy(BaseStrategy):
         return self.df
 ```
 
-Made something you like? Feel free to open a pull request to add your strategy to the
-project.
+</details>
+
+New strategies may be contributed via pull request.
 
 ## FAQ
 
 **What happens if I stop the bot while I'm holding a position?**
-Your open position is saved to `data/{TOKEN}_data.csv`. When you restart, the bot picks up
-the existing position and keeps managing its stop-loss and take-profit.
+Your open position is saved to `data/{TOKEN}_data.csv`. On restart, the bot picks it up and keeps managing its stop-loss and take-profit.
 
 **Do I need a Jupiter API key?**
-No. The key is optional and only sent if you set it — the default `swap/v2` endpoint works
-without one.
+No. It is optional and only sent if set — the default `swap/v2` endpoint works without one.
 
 **Can I trade more than one token?**
-Yes. Add each token to `secondary_mints` (and its symbol to `secondary_mint_symbols`) and
-SolTrade analyzes and trades them all in the same loop.
+Yes. Add each token to `secondary_mints` (and its symbol to `secondary_mint_symbols`) and SolTrade trades them all in the same loop.
 
 **Where is my private key stored?**
-In `config.json` on your machine. The bot loads it locally and signs transactions locally —
-it is never sent to any server, and `config.json` is git-ignored.
+Only in `config.json` on your machine. The bot loads and signs locally — it is never sent to any server, and `config.json` is git-ignored.
 
 ## Glossary
 
@@ -323,17 +262,3 @@ it is never sent to any server, and `config.json` is git-ignored.
 | Slippage | Difference between expected and executed trade price |
 | BPS | Basis points — 100 BPS = 1% |
 | Whale | A wallet holding a large amount of a token |
-
-## Support
-
-SolTrade has no platform fee and will stay open-source. If you'd like to support the
-project, donations are welcome at:
-
-```
-22gwSXc7mvp6UZwgDouhQuJ5AmHN3oxLNGULkARmT3PV
-```
-
-## Disclaimer
-
-I am not responsible for any losses you may incur while using this software. Use at your
-own risk. Nothing here is financial advice.
