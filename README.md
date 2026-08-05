@@ -46,11 +46,10 @@ A hard fork of [noahtheprogrammer/soltrade](https://github.com/noahtheprogrammer
    cp config.json.sample config.json
    ```
 
-3. Set the required settings in `config.json`:
+3. Configure credentials and tokens:
 
-   - `private_key` — your Solana wallet private key
-   - `api_key` — your [CryptoCompare](https://www.cryptocompare.com/cryptopian/api-keys) API key
-   - `secondary_mints` / `secondary_mint_symbols` — the token(s) you want to trade
+   - Copy `.env.sample` to `.env` and set `SOLTRADE_PRIVATE_KEY` (your Solana wallet) and `SOLTRADE_API_KEY` (your [CryptoCompare](https://www.cryptocompare.com/cryptopian/api-keys) API key).
+   - In `config.json`, set `secondary_mints` / `secondary_mint_symbols` — the token(s) you want to trade.
 
 4. Start the bot:
 
@@ -60,17 +59,24 @@ A hard fork of [noahtheprogrammer/soltrade](https://github.com/noahtheprogrammer
 
 ## Configuration
 
-SolTrade reads its configuration from `config.json` in the project root. Copy `config.json.sample` to `config.json` to create the configuration file.
+SolTrade reads its configuration from `config.json` and its credentials from the `.env` file, both in the project root. Copy `config.json.sample` to `config.json` and `.env.sample` to `.env` before the first run. Environment variables take precedence over `config.json`.
+
+### Credentials
+
+Secrets live in the git-ignored `.env` file:
+
+| Variable | Purpose |
+| --- | --- |
+| `SOLTRADE_PRIVATE_KEY` | Solana wallet private key (base58) |
+| `SOLTRADE_API_KEY` | [CryptoCompare](https://www.cryptocompare.com/cryptopian/api-keys) API key, used for candlestick data |
+| `SOLTRADE_JUPITER_API_KEY` | Jupiter API key — optional, sent only if set |
 
 ### Core settings
 
 | Setting | What it does | Default |
 | --- | --- | --- |
-| `private_key` | Solana wallet private key (base58) | — *(required)* |
-| `api_key` | CryptoCompare API key, used for candlestick data | — *(required)* |
 | `rpc_https` | Solana RPC endpoint for balances and token data | `https://api.mainnet-beta.solana.com` |
 | `jup_api` | Jupiter Swap API endpoint | `https://api.jup.ag/swap/v2` |
-| `jupiter_api_key` | Jupiter API key — optional, sent only if set | — |
 | `primary_mint` / `primary_mint_symbol` | The token you pay with (usually a stablecoin) | `EPjF..v` / `USDC` |
 | `secondary_mints` / `secondary_mint_symbols` | The token(s) you want to trade | `[So11..2]` / `[SOL]` |
 | `price_update_seconds` | How often token prices refresh | `60` |
@@ -252,7 +258,7 @@ No. It is optional and only sent if set — the default `swap/v2` endpoint works
 Yes. Add each token to `secondary_mints` (and its symbol to `secondary_mint_symbols`) and SolTrade trades them all in the same loop.
 
 **Where is my private key stored?**
-Only in `config.json` on your machine. The bot loads and signs locally — it is never sent to any server, and `config.json` is git-ignored.
+Only in the `.env` file on your machine. The bot loads and signs locally — it is never sent to any server, and `.env` is git-ignored.
 
 ## Glossary
 

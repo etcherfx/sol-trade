@@ -3,6 +3,7 @@ import os
 import sys
 from typing import Any
 
+from dotenv import load_dotenv
 from solana.rpc.async_api import AsyncClient
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
@@ -28,6 +29,8 @@ class Config:
         self.max_slippage: int = 50
         self.strategy: str = "default"
         self.path = os.path.join(os.path.dirname(__file__), "..", "config.json")
+        self.dotenv_path = os.path.join(os.path.dirname(__file__), "..", ".env")
+        load_dotenv(self.dotenv_path)
         self._client: AsyncClient | None = None
         self._decimals_cache: dict[str, int] = {}
 
@@ -100,19 +103,30 @@ class Config:
             if value in ("", None):
                 value = fallback
             setattr(self, key, value)
-        
+
+        # Credentials: environment variables (.env) take precedence over config.json
+        env_overrides = {
+            "private_key": "SOLTRADE_PRIVATE_KEY",
+            "api_key": "SOLTRADE_API_KEY",
+            "jupiter_api_key": "SOLTRADE_JUPITER_API_KEY",
+        }
+        for attr, env_var in env_overrides.items():
+            env_value = os.getenv(env_var)
+            if env_value:
+                setattr(self, attr, env_value)
+
         self._validate_config()
     
     def _validate_config(self):
         """Validate that critical configuration fields are properly set."""
         if not self.private_key or self.private_key == "":
-            log_general.warning("Private key is not set in config.json. Bot cannot trade.")
+            log_general.warning("Private key is not set in .env or config.json. Bot cannot trade.")
         
         if not self.api_key or self.api_key == "":
-            log_general.warning("CryptoCompare API key is not set in config.json. Price data unavailable.")
+            log_general.warning("CryptoCompare API key is not set in .env or config.json. Price data unavailable.")
         
         if not self.jupiter_api_key or self.jupiter_api_key == "":
-            log_general.warning("Jupiter API key is not set in config.json. Required for api.jup.ag endpoint.")
+            log_general.warning("Jupiter API key is not set. Optional unless required by your api.jup.ag endpoint.")
         
         if not self.rpc_https:
             log_general.error("RPC endpoint is not set in config.json.")

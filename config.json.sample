@@ -1,7 +1,4 @@
 {
-  "api_key": "",
-  "jupiter_api_key": "",
-  "private_key": "",
   "rpc_https": "https://api.mainnet-beta.solana.com",
   "jup_api": "https://api.jup.ag/swap/v2",
   "primary_mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
