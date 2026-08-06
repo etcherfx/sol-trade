@@ -29,7 +29,6 @@ primary_mint: str = config_instance.primary_mint
 primary_mint_symbol: str = config_instance.primary_mint_symbol
 secondary_mints: list[str] = config_instance.secondary_mints
 secondary_mint_symbols: list[str] = config_instance.secondary_mint_symbols
-trading_interval_minutes: int = config_instance.trading_interval_minutes
 price_update_seconds: int = config_instance.price_update_seconds
 whale_tracking_enabled: bool = config_instance.whale_tracking_enabled
 confluence_enabled: bool = config_instance.confluence_enabled
@@ -52,7 +51,9 @@ class BalanceCache:
 
     def get(self, mint: str) -> float:
         if mint not in self._cache:
-            self._cache[mint] = find_balance(mint)
+            # find_balance may return None on persistent rate limiting; treat
+            # as zero so downstream arithmetic never sees None.
+            self._cache[mint] = find_balance(mint) or 0.0
         return self._cache[mint]
 
     def invalidate(self, mint: str) -> None:
@@ -83,8 +84,8 @@ def fetch_prices(mints: list[str]) -> dict[str, float]:
         else:
             log_general.error(f"HTTP error fetching prices for {unique_mints}: {e}")
         return {mint: 0.0 for mint in unique_mints}
-    except Exception as e:  # pragma: no cover - network errors  # noqa: BLE001
-        log_general.error(f"Failed to fetch prices for {unique_mints}: {e}")
+    except Exception as e:  # noqa: BLE001 - network errors
+        log_general.error(f"failed to fetch prices for {unique_mints}: {e}")
         return {mint: 0.0 for mint in unique_mints}
 
     prices: dict[str, float] = {}
@@ -92,38 +93,43 @@ def fetch_prices(mints: list[str]) -> dict[str, float]:
         mint_data = cast(dict[str, Any], response_json.get(mint, {}) or {})
         price = float(mint_data.get("usdPrice") or 0)
         if price == 0:
-            log_general.debug(f"Price for {mint} missing from response; defaulting to 0")
+            log_general.debug(f"price for {mint} missing from response; defaulting to 0")
         prices[mint] = price
     return prices
 
 
-initial_primary_balance = find_balance(primary_mint)
-initial_secondary_balances = [find_balance(mint) for mint in secondary_mints]
-initial_price_map = fetch_prices([primary_mint, *secondary_mints])
-initial_primary_price = initial_price_map.get(primary_mint, 0.0)
-initial_secondary_prices = [initial_price_map.get(mint, 0.0) for mint in secondary_mints]
+# P&L baseline — captured once per run by start_trading, not at import time.
+initial_primary_balance: float = 0.0
+initial_secondary_balances: list[float] = []
+initial_primary_price: float = 0.0
+initial_secondary_prices: list[float] = []
+_last_price_map: dict[str, float] = {}
 
 
+def _capture_baseline() -> None:
+    """Snapshot wallet balances and prices at run start for P&L math."""
+    global initial_primary_balance, initial_secondary_balances
+    global initial_primary_price, initial_secondary_prices
 
-def fetch_candlestick(primary_mint_symbol: str, secondary_mint_symbol: str) -> dict[str, Any]:
-    """Fetch candlestick data from the configured market data source."""
-    try:
-        candles = data_source.fetch_candles(
-            secondary_mint_symbol, primary_mint_symbol, "1m", 50
+    initial_primary_balance = find_balance(primary_mint) or 0.0
+    initial_secondary_balances = [find_balance(mint) or 0.0 for mint in secondary_mints]
+
+    prices = fetch_prices([primary_mint, *secondary_mints])
+    for mint, price in prices.items():
+        if price > 0:
+            _last_price_map[mint] = price
+    initial_primary_price = _last_price_map.get(primary_mint, 0.0)
+    initial_secondary_prices = [_last_price_map.get(mint, 0.0) for mint in secondary_mints]
+
+    if not initial_primary_price or any(p == 0 for p in initial_secondary_prices):
+        log_general.warning(
+            "P&L baseline captured with missing prices; profit figures may be unreliable."
         )
-        return {"Data": {"Data": candles}}
-    except Exception as e:
-        log_general.error(f"Failed to fetch candlestick data: {e}")
-        raise
 
 
 
 
-def _as_float(value: Any) -> float:
-    try:
-        return float(value) if value is not None and not pd.isna(value) else 0.0
-    except (TypeError, ValueError):
-        return 0.0
+
 
 
 def _as_float_or_none(value: Any) -> float | None:
@@ -133,42 +139,67 @@ def _as_float_or_none(value: Any) -> float | None:
         return None
 
 
+def _as_float(value: Any) -> float:
+    return _as_float_or_none(value) or 0.0
+
+
 def perform_analysis(state: UIState) -> None:
     data_frames: list[pd.DataFrame] = []
     price_map = fetch_prices([primary_mint, *secondary_mints])
+    for mint, price in price_map.items():
+        if price > 0:
+            _last_price_map[mint] = price
+        else:
+            # Fall back to the last known price so a price-API outage does not
+            # produce a fake 0-value portfolio or profit swing.
+            price_map[mint] = _last_price_map.get(mint, 0.0)
 
     for secondary_mint, secondary_mint_symbol in zip(
         secondary_mints, secondary_mint_symbols
     ):
-        candle_json = fetch_candlestick(primary_mint_symbol, secondary_mint_symbol)
-        candle_dict = candle_json["Data"]["Data"]
-        columns = ["close", "high", "low", "open", "time"]
-        new_df = pd.DataFrame(candle_dict, columns=columns)
-        new_df["time"] = pd.to_datetime(new_df["time"], unit="s")
-        new_df = strategy(new_df)
-        new_df["total_profit"] = 0
-        new_df["mint"] = secondary_mint_symbol
-        new_df["position"] = False
-        data_file_path = f"data/{secondary_mint_symbol}_data.csv"
-
         try:
-            existing_df = read_dataframe_from_csv(data_file_path)
-            if existing_df["position"].iat[-1]:
-                columns_to_merge = [
-                    "position",
-                    "entry_price",
-                    "takeprofit",
-                    "stoploss",
-                    "trailing_stoploss",
-                    "trailing_stoploss_target",
-                ]
+            candles = data_source.fetch_candles(
+                secondary_mint_symbol, primary_mint_symbol, "1m", 50
+            )
+            new_df = pd.DataFrame(
+                candles, columns=["close", "high", "low", "open", "time"]
+            )
+            if new_df.empty:
+                log_general.warning(
+                    f"no candle data for {secondary_mint_symbol}; skipping this cycle"
+                )
+                data_frames.append(None)
+                continue
+            new_df["time"] = pd.to_datetime(new_df["time"], unit="s")
+            new_df["symbol"] = secondary_mint_symbol
+            new_df["position"] = False
+            data_file_path = f"data/{secondary_mint_symbol}_data.csv"
 
-                for col in columns_to_merge:
-                    new_df[col] = existing_df.iloc[-1][col]
+            try:
+                existing_df = read_dataframe_from_csv(data_file_path)
+                if len(existing_df) > 0 and existing_df["position"].iat[-1]:
+                    columns_to_merge = [
+                        "position",
+                        "entry_price",
+                        "takeprofit",
+                        "stoploss",
+                        "trailing_stoploss",
+                        "trailing_stoploss_target",
+                    ]
 
-            df = new_df
-        except FileNotFoundError:
-            df = new_df
+                    for col in columns_to_merge:
+                        if col in existing_df.columns:
+                            new_df[col] = existing_df.iloc[-1][col]
+            except FileNotFoundError:
+                pass
+
+            # Evaluate entry/exit AFTER risk columns are attached so protective
+            # exits (stoploss / takeprofit / trailing_stoploss) can fire.
+            df = strategy(new_df)
+        except Exception as e:  # noqa: BLE001 - one token must not abort the cycle
+            log_general.warning(f"analysis failed for {secondary_mint_symbol}: {e}")
+            data_frames.append(None)
+            continue
 
         data_frames.append(df)
 
@@ -179,7 +210,7 @@ def perform_analysis(state: UIState) -> None:
 
             update_whale_data()
         except Exception as e:  # noqa: BLE001 - optional feature failure; log and continue
-            log_general.warning(f"Whale tracker update failed: {e}")
+            log_general.warning(f"whale tracker update failed: {e}")
 
     # Update market regime (only if stale)
     if market_regime_enabled:
@@ -188,7 +219,7 @@ def perform_analysis(state: UIState) -> None:
 
             update_regime()
         except Exception as e:  # noqa: BLE001 - optional feature failure; log and continue
-            log_general.warning(f"Market regime update failed: {e}")
+            log_general.warning(f"market regime update failed: {e}")
 
     # Update sentiment data (only if stale)
     if sentiment_enabled:
@@ -197,7 +228,7 @@ def perform_analysis(state: UIState) -> None:
 
             update_sentiment(secondary_mint_symbols)
         except Exception as e:  # noqa: BLE001 - optional feature failure; log and continue
-            log_general.warning(f"Sentiment update failed: {e}")
+            log_general.warning(f"sentiment update failed: {e}")
 
     current_primary_balance = _balance_cache.get(primary_mint)
     current_secondary_balances = [_balance_cache.get(mint) for mint in secondary_mints]
@@ -214,11 +245,12 @@ def perform_analysis(state: UIState) -> None:
         )
     )
     total_profit = current_total_value - initial_total_value
-    
 
     for df, secondary_mint, secondary_mint_symbol in zip(
         data_frames, secondary_mints, secondary_mint_symbols
     ):
+        if df is None:
+            continue
         data_file_path = f"data/{secondary_mint_symbol}_data.csv"
         if not df["position"].iat[-1]:
             handle_buy_signal(df, secondary_mint, data_file_path, secondary_mint_symbol)
@@ -228,6 +260,8 @@ def perform_analysis(state: UIState) -> None:
     # Push the analysis results to the UI
     tokens = []
     for df, symbol in zip(data_frames, secondary_mint_symbols):
+        if df is None:
+            continue
         last = df.iloc[-1]
         tokens.append(
             TokenStatus(
@@ -256,8 +290,9 @@ def perform_analysis(state: UIState) -> None:
 
 
 def handle_buy_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: str, secondary_mint_symbol: str) -> bool:
+    """Execute a buy when the last bar has an entry signal; returns success."""
     if df["entry"].iat[-1] == 1:
-        mint_symbol = cast(str, df["mint"].iat[0])
+        mint_symbol = cast(str, df["symbol"].iat[0])
 
         # Check sentiment circuit breaker
         if sentiment_enabled:
@@ -265,12 +300,12 @@ def handle_buy_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: str
 
             if is_token_blocked(secondary_mint_symbol):
                 log_transaction.info(
-                    f"Trading paused for {secondary_mint_symbol}: sentiment circuit breaker active"
+                    f"trading paused for {secondary_mint_symbol}: sentiment circuit breaker active"
                 )
                 return False
             if is_market_crash():
                 log_transaction.info(
-                    "All new entries paused: market sentiment crash detected"
+                    "all new entries paused: market sentiment crash detected"
                 )
                 return False
 
@@ -280,7 +315,7 @@ def handle_buy_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: str
         result = evaluate_buy_confluence("BUY", secondary_mint_symbol)
         if result["action"] == "skip":
             log_transaction.info(
-                f"Buy signal for {secondary_mint_symbol} skipped: {result['reason']}"
+                f"buy signal for {secondary_mint_symbol} skipped: {result['reason']}"
             )
             return False
 
@@ -296,7 +331,7 @@ def handle_buy_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: str
         if size_modifier < 1.0:
             input_amount = input_amount * size_modifier
             log_transaction.info(
-                f"Position size reduced to {size_modifier*100:.0f}% for {secondary_mint_symbol}: {result['reason']}"
+                f"position size reduced to {size_modifier*100:.0f}% for {secondary_mint_symbol}: {result['reason']}"
             )
 
         log_transaction.info(
@@ -326,11 +361,12 @@ def handle_buy_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: str
 
 
 def handle_sell_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: str, secondary_mint_symbol: str) -> bool:
+    """Execute a sell when the last bar has an exit signal; returns success."""
     input_amount = _balance_cache.get(secondary_mint)
     df = calc_trailing_stoploss(df)
 
     if df["exit"].iat[-1] == 1:
-        mint_symbol = cast(str, df["mint"].iat[0])
+        mint_symbol = cast(str, df["symbol"].iat[0])
 
         # Protective exits (stop-loss / take-profit / trailing stop) always execute at 100%
         if not _is_protective_exit(df):
@@ -340,7 +376,7 @@ def handle_sell_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: st
             result = evaluate_sell_confluence("SELL", secondary_mint_symbol)
             if result["action"] == "skip":
                 log_transaction.info(
-                    f"Sell signal for {secondary_mint_symbol} skipped: {result['reason']}"
+                    f"sell signal for {secondary_mint_symbol} skipped: {result['reason']}"
                 )
                 return False
 
@@ -349,7 +385,7 @@ def handle_sell_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: st
             if size_modifier < 1.0:
                 input_amount = input_amount * size_modifier
                 log_transaction.info(
-                    f"Sell position size reduced to {size_modifier*100:.0f}% for {secondary_mint_symbol}: {result['reason']}"
+                    f"sell position size reduced to {size_modifier*100:.0f}% for {secondary_mint_symbol}: {result['reason']}"
                 )
 
         log_transaction.info(
@@ -389,6 +425,7 @@ def start_trading(state: UIState) -> None:
 
     _stop_event = threading.Event()
     log_general.info("SolTrade has now initialized the trading algorithm.")
+    _capture_baseline()
 
     def _run() -> None:
         state.update(lambda s: setattr(s, "running", True))
@@ -397,7 +434,7 @@ def start_trading(state: UIState) -> None:
                 try:
                     perform_analysis(state)
                 except Exception as e:  # noqa: BLE001 - keep the loop alive across errors
-                    log_general.error(f"Analysis cycle failed: {e}")
+                    log_general.error(f"analysis cycle failed: {e}")
                     state.update(lambda s: setattr(s, "error_count", s.error_count + 1))
                 for remaining in range(price_update_seconds, 0, -1):
                     if _stop_event.is_set():
@@ -419,6 +456,10 @@ def stop_trading() -> None:
         _stop_event.set()
     if _trading_thread is not None:
         _trading_thread.join(timeout=10)
+        if _trading_thread.is_alive():
+            log_general.warning(
+                "Trading thread did not stop within 10s; it will be terminated on exit."
+            )
     log_general.info("SolTrade has been stopped.")
 
 
@@ -430,10 +471,11 @@ def save_dataframe_to_csv(df: pd.DataFrame, file_path: str) -> None:
     try:
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         df.to_csv(file_path, index=False)
-        log_general.info(f"Data successfully saved to {file_path}")
+        log_general.info(f"data saved to {file_path}")
     except Exception as e:  # noqa: BLE001 - data save failure; log and continue
-        log_general.error(f"Failed to save data to {file_path}: {e}")
+        log_general.error(f"failed to save data to {file_path}: {e}")
 
 
 def read_dataframe_from_csv(file_path: str) -> pd.DataFrame:
+    """Load the position CSV (raises FileNotFoundError when absent)."""
     return pd.read_csv(file_path)  # type: ignore[reportGeneralTypeIssues]

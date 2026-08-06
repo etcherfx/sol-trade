@@ -1,5 +1,5 @@
 import base64
-import os
+from typing import Any
 
 import httpx
 from solders.message import to_bytes_versioned
@@ -13,30 +13,27 @@ class OrderError(Exception):
     """Raised when the Jupiter API returns an invalid order response."""
 
 
-class MarketPosition:
-    def __init__(self, path):
-        self.path = path
-        self.ensure_directory_exists()
+def _sign_order_transaction(transaction_b64: str) -> str:
+    """Partially sign a Jupiter order transaction, preserving its signature slots.
 
-    def ensure_directory_exists(self):
-        directory = os.path.dirname(self.path)
-        if not os.path.exists(directory):
-            os.makedirs(directory)
-
-
-_market_instance = None
-
-
-def market(path=None):
-    global _market_instance
-    if _market_instance is None and path is not None:
-        _market_instance = MarketPosition(path)
-    return _market_instance
+    JupiterZ RFQ orders carry two signature slots: the taker's plus a
+    market-maker placeholder that /execute fills server-side. Preserve the slot
+    count — rebuilding with a single signature corrupts the message header and
+    /execute rejects it with 400.
+    """
+    raw_txn = VersionedTransaction.from_bytes(base64.b64decode(transaction_b64))
+    signature = config().keypair.sign_message(to_bytes_versioned(raw_txn.message))
+    signatures = list(raw_txn.signatures)
+    if not signatures:
+        raise OrderError("Transaction has no signature slots")
+    signatures[0] = signature
+    signed_txn = VersionedTransaction.populate(raw_txn.message, signatures)
+    return base64.b64encode(bytes(signed_txn)).decode("utf-8")
 
 
 async def create_order(
     input_amount: float, input_token_mint: str, output_token_mint: str
-) -> dict:
+) -> dict[str, Any]:
     """
     Creates a swap order using Jupiter Ultra API.
     
@@ -49,7 +46,7 @@ async def create_order(
         Dictionary containing the order response from Jupiter API
     """
     log_transaction.info(
-        f"SolTrade is creating order for {input_amount} {input_token_mint}"
+        f"SolTrade is creating order for {input_amount} {input_token_mint}."
     )
 
     token_decimals = config().decimals(input_token_mint)
@@ -77,11 +74,14 @@ async def create_order(
         response = await client.get(api_link, params=params, headers=headers)
         response.raise_for_status()
         result = response.json()
-        log_transaction.info(f"Order response: {result}")
+        log_transaction.info(
+            f"Order created (requestId: {result.get('requestId')}, "
+            f"outAmount: {result.get('outAmount')})"
+        )
         return result
 
 
-async def execute_order(order_response: dict) -> dict:
+async def execute_order(order_response: dict) -> dict[str, Any]:
     """
     Signs and executes a swap order using Jupiter Ultra API.
     This replaces the legacy send_transaction function.
@@ -94,20 +94,18 @@ async def execute_order(order_response: dict) -> dict:
         
         transaction_b64 = order_response.get("transaction")
         if not transaction_b64:
-            log_transaction.error("No transaction returned in order response")
+            log_transaction.error("no transaction returned in order response")
             raise OrderError("No transaction in order response")
         
         request_id = order_response["requestId"]
         
-        # Deserialize and sign the transaction
-        raw_txn = VersionedTransaction.from_bytes(base64.b64decode(transaction_b64))
-        signature = config().keypair.sign_message(to_bytes_versioned(raw_txn.message))
-        signed_txn = VersionedTransaction.populate(raw_txn.message, [signature])
+        # Deserialize and partially sign the transaction (see
+        # _sign_order_transaction for why the signature count is preserved).
+        signed_txn_b64 = _sign_order_transaction(transaction_b64)
         
-        # Convert signed transaction back to base64
-        signed_txn_b64 = base64.b64encode(bytes(signed_txn)).decode("utf-8")
-        
-        log_transaction.info(f"SolTrade is executing order with requestId: {request_id}")
+        log_transaction.info(
+            f"SolTrade is executing order with requestId: {request_id}."
+        )
         
         # Prepare headers with Jupiter API key
         headers = {"Content-Type": "application/json"}
@@ -124,18 +122,26 @@ async def execute_order(order_response: dict) -> dict:
                 },
                 headers=headers
             )
-            execute_response.raise_for_status()
+            try:
+                execute_response.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                # Surface Jupiter's error body (code + message) instead of the
+                # generic "400 Bad Request" so failures are diagnosable.
+                raise OrderError(
+                    f"Jupiter execute failed ({e.response.status_code}): "
+                    f"{e.response.text[:300]}"
+                ) from e
             result = execute_response.json()
             
             if result.get("status") == "Success":
                 log_transaction.info(f"SolTrade TxID: {result.get('signature')}")
             else:
-                log_transaction.error(f"Transaction failed: {result.get('error')}")
+                log_transaction.error(f"transaction failed: {result.get('error')}")
             
             return result
             
     except Exception as e:
-        log_transaction.error(f"Failed to execute transaction: {e}")
+        log_transaction.error(f"failed to execute transaction: {e}")
         raise
 
 
@@ -145,7 +151,8 @@ async def perform_swap(
     output_token_mint: str,
     sent_token_symbol: str,
     output_token_symbol: str,
-):
+) -> bool:
+    """Swap tokens via Jupiter; returns True when the swap succeeded."""
     log_general.info("SolTrade is taking a market position.")
 
     order = execute_result = None
@@ -165,7 +172,8 @@ async def perform_swap(
                     break
                 else:
                     log_general.warning(
-                        f"SolTrade failed to complete transaction {i}. Error: {execute_result.get('error')}. Retrying."
+                        f"SolTrade failed to complete transaction {i}. Retrying. "
+                        f"Error: {execute_result.get('error')}"
                     )
             except Exception as e:  # noqa: BLE001 - retry loop
                 log_general.warning(
@@ -191,6 +199,6 @@ async def perform_swap(
     bought_amount = int(output_amount_str) / decimals
     
     log_transaction.info(
-        f"Sold {sent_amount} {sent_token_symbol} for {bought_amount:.2f} {output_token_symbol}"
+        f"SolTrade sold {sent_amount} {sent_token_symbol} for {bought_amount:.2f} {output_token_symbol}."
     )
     return True

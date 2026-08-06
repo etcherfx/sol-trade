@@ -13,7 +13,7 @@ from sol_trade.utils import run_async
 
 
 class Config:
-    def __init__(self):
+    def __init__(self) -> None:
         self.jupiter_api_key: str = ""
         self.private_key: str = ""
         self.rpc_https: str = "https://api.mainnet-beta.solana.com"
@@ -24,7 +24,6 @@ class Config:
         self.secondary_mints: list[str] = []
         self.secondary_mint_symbols: list[str] = []
         self.price_update_seconds: int = 60
-        self.trading_interval_minutes: int = 1
         self.max_slippage: int = 50
         self.strategy: str = "default"
         self.data_exchange: str = "okx"
@@ -56,7 +55,7 @@ class Config:
         self.sentiment_data_path: str = "data/sentiment_data.json"
         self.load_config()
 
-    def load_config(self):
+    def load_config(self) -> None:
         default_config: dict[str, Any] = {
             "jupiter_api_key": "",
             "private_key": "",
@@ -67,7 +66,6 @@ class Config:
             "secondary_mints": ["So11111111111111111111111111111111111111112"],
             "secondary_mint_symbols": ["SOL"],
             "price_update_seconds": 60,
-            "trading_interval_minutes": 1,
             "max_slippage": 50,
             "strategy": "default",
             "data_exchange": "okx",
@@ -118,7 +116,7 @@ class Config:
 
         self._validate_config()
     
-    def _validate_config(self):
+    def _validate_config(self) -> None:
         """Validate that critical configuration fields are properly set."""
         if not self.private_key or self.private_key == "":
             log_general.warning("Private key is not set in .env or config.json. Bot cannot trade.")
@@ -155,11 +153,10 @@ class Config:
         try:
             b58_string = self.private_key
             keypair = Keypair.from_base58_string(b58_string)
-            # print(f"Using Wallet: {keypair.pubkey()}")
 
             return keypair
         except (ValueError, TypeError) as e:
-            log_general.error(f"Error decoding private key: {e}")
+            log_general.error(f"error decoding private key: {e}")
             sys.exit(1)
 
     @property

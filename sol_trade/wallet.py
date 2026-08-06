@@ -7,9 +7,31 @@ from sol_trade.config import config
 from sol_trade.utils import handle_rate_limiting, run_async
 
 
-# Returns the current balance of token in the wallet
+def token_account_ui_amounts(owner: Pubkey, token_mint: str) -> list[float]:
+    """UI amounts across all token accounts for a mint (empty when none)."""
+    response = run_async(
+        config()
+        .client.get_token_accounts_by_owner_json_parsed(
+            owner, TokenAccountOpts(mint=Pubkey.from_string(token_mint))
+        )
+    ).to_json()
+    json_response = json.loads(response)
+    amounts = []
+    for account in json_response.get("result", {}).get("value", []):
+        ui_amount = account["account"]["data"]["parsed"]["info"]["tokenAmount"][
+            "uiAmount"
+        ]
+        if ui_amount is not None:
+            amounts.append(float(ui_amount))
+    return amounts
+
+
 @handle_rate_limiting()
 def find_balance(token_mint: str) -> float:
+    """Return the spendable token balance of the wallet.
+
+    SOL keeps a 0.02 SOL fee reserve; zero is returned below that floor.
+    """
     if token_mint == config().sol_mint:
         balance_response = run_async(
             config().client.get_balance(config().public_address)
@@ -19,16 +41,5 @@ def find_balance(token_mint: str) -> float:
             return 0.0
         return balance_response - 0.02
 
-    response = run_async(
-        config()
-        .client.get_token_accounts_by_owner_json_parsed(
-            config().public_address,
-            TokenAccountOpts(mint=Pubkey.from_string(token_mint)),
-        )
-    ).to_json()
-    json_response = json.loads(response)
-    if len(json_response["result"]["value"]) == 0:
-        return 0
-    return json_response["result"]["value"][0]["account"]["data"]["parsed"]["info"][
-        "tokenAmount"
-    ]["uiAmount"]
+    amounts = token_account_ui_amounts(config().public_address, token_mint)
+    return amounts[0] if amounts else 0.0

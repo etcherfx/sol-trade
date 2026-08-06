@@ -113,6 +113,7 @@ def header_fragments(state: UIState, screen_name: str) -> StyleAndTextTuples:
 
 
 def _wallet_fragments(state: UIState) -> StyleAndTextTuples:
+    state = state.snapshot()
     frags: StyleAndTextTuples = [
         ("bold cyan", "── WALLET ───────────────────────────────\n")
     ]
@@ -131,6 +132,7 @@ def _wallet_fragments(state: UIState) -> StyleAndTextTuples:
 
 
 def _status_fragments(state: UIState) -> StyleAndTextTuples:
+    state = state.snapshot()
     features = []
     if config().whale_tracking_enabled:
         features.append("Whale")
@@ -160,6 +162,7 @@ def _status_fragments(state: UIState) -> StyleAndTextTuples:
 
 
 def _market_fragments(state: UIState) -> StyleAndTextTuples:
+    state = state.snapshot()
     frags: StyleAndTextTuples = [
         ("bold cyan", "── MARKET ────────────────────────────────────────────────────────\n"),
         (
