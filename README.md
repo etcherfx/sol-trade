@@ -67,6 +67,8 @@ A hard fork of [noahtheprogrammer/soltrade](https://github.com/noahtheprogrammer
 
 SolTrade reads its configuration from `config.json` and its credentials from the `.env` file, both in the project root. Copy `config.json.sample` to `config.json` and `.env.sample` to `.env` before the first run. Environment variables take precedence over `config.json`.
 
+Config is **hot-reloaded**: edits to `config.json` are picked up automatically on the next trading cycle (≤ 1 minute) — strategy, feature toggles, slippage, whale wallets, and polling intervals all apply live. Structural settings (tokens, RPC, exchange) and `.env` credentials still require a restart.
+
 ### Credentials
 
 Secrets live in the git-ignored `.env` file:

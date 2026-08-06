@@ -29,11 +29,6 @@ primary_mint: str = config_instance.primary_mint
 primary_mint_symbol: str = config_instance.primary_mint_symbol
 secondary_mints: list[str] = config_instance.secondary_mints
 secondary_mint_symbols: list[str] = config_instance.secondary_mint_symbols
-price_update_seconds: int = config_instance.price_update_seconds
-whale_tracking_enabled: bool = config_instance.whale_tracking_enabled
-confluence_enabled: bool = config_instance.confluence_enabled
-market_regime_enabled: bool = config_instance.market_regime_enabled
-sentiment_enabled: bool = config_instance.sentiment_enabled
 
 if not primary_mint or not primary_mint_symbol:
     raise ValueError("Primary mint configuration is missing.")
@@ -275,7 +270,7 @@ def perform_analysis(state: UIState) -> None:
         data_frames.append(df)
 
     # Update whale tracking data
-    if whale_tracking_enabled:
+    if config().whale_tracking_enabled:
         try:
             from sol_trade.whale_tracker import update_whale_data
 
@@ -284,7 +279,7 @@ def perform_analysis(state: UIState) -> None:
             log_general.warning(f"whale tracker update failed: {e}")
 
     # Update market regime (only if stale)
-    if market_regime_enabled:
+    if config().market_regime_enabled:
         try:
             from sol_trade.market_regime import update_regime
 
@@ -293,7 +288,7 @@ def perform_analysis(state: UIState) -> None:
             log_general.warning(f"market regime update failed: {e}")
 
     # Update sentiment data (only if stale)
-    if sentiment_enabled:
+    if config().sentiment_enabled:
         try:
             from sol_trade.sentiment import update_sentiment
 
@@ -367,7 +362,7 @@ def handle_buy_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: str
         mint_symbol = cast(str, df["symbol"].iat[0])
 
         # Check sentiment circuit breaker
-        if sentiment_enabled:
+        if config().sentiment_enabled:
             from sol_trade.sentiment import is_market_crash, is_token_blocked
 
             if is_token_blocked(secondary_mint_symbol):
@@ -536,12 +531,13 @@ def start_trading(state: UIState, dry_run: bool = False) -> None:
         state.update(lambda s: setattr(s, "running", True))
         try:
             while not _stop_event.is_set():
+                config().maybe_reload_config()
                 try:
                     perform_analysis(state)
                 except Exception as e:  # noqa: BLE001 - keep the loop alive across errors
                     log_general.error(f"analysis cycle failed: {e}")
                     state.update(lambda s: setattr(s, "error_count", s.error_count + 1))
-                for remaining in range(price_update_seconds, 0, -1):
+                for remaining in range(config().price_update_seconds, 0, -1):
                     if _stop_event.is_set():
                         return
                     state.update(lambda s, r=remaining: setattr(s, "countdown", r))

@@ -11,6 +11,28 @@ from solders.pubkey import Pubkey
 from sol_trade.log import log_general
 from sol_trade.utils import run_async
 
+# Keys that are NOT hot-reloaded — changing them requires a restart.
+_STRUCTURAL_KEYS = (
+    "primary_mint",
+    "primary_mint_symbol",
+    "secondary_mints",
+    "secondary_mint_symbols",
+    "sol_mint",
+    "rpc_https",
+    "jup_api",
+    "data_exchange",
+    "candles_path",
+    "private_key",
+    "jupiter_api_key",
+)
+
+
+def _file_mtime(path: str) -> float:
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0.0
+
 
 class Config:
     def __init__(self) -> None:
@@ -54,8 +76,9 @@ class Config:
         self.sentiment_crash_threshold: float = -0.7
         self.sentiment_data_path: str = "data/sentiment_data.json"
         self.load_config()
+        self._config_mtime: float = _file_mtime(self.path)
 
-    def load_config(self) -> None:
+    def _apply_config_file(self) -> None:
         default_config: dict[str, Any] = {
             "jupiter_api_key": "",
             "private_key": "",
@@ -104,6 +127,11 @@ class Config:
                 value = fallback
             setattr(self, key, value)
 
+        self._config_mtime = _file_mtime(self.path)
+
+    def load_config(self) -> None:
+        self._apply_config_file()
+
         # Credentials: environment variables (.env) take precedence over config.json
         env_overrides = {
             "private_key": "SOLTRADE_PRIVATE_KEY",
@@ -115,6 +143,28 @@ class Config:
                 setattr(self, attr, env_value)
 
         self._validate_config()
+
+    def reload_config(self) -> None:
+        """Re-read config.json for lightweight settings (hot-reload).
+
+        Structural keys (tokens, RPC, exchange) and credentials are pinned —
+        changing those still requires a restart.
+        """
+        pinned = {key: getattr(self, key) for key in _STRUCTURAL_KEYS}
+        self._apply_config_file()
+        for key, value in pinned.items():
+            setattr(self, key, value)
+        self._validate_config()
+
+    def maybe_reload_config(self) -> None:
+        """Reload config.json when it changed on disk (malformed edits are kept out)."""
+        mtime = _file_mtime(self.path)
+        if mtime != self._config_mtime and mtime != 0.0:
+            try:
+                log_general.info("config.json changed — reloading configuration.")
+                self.reload_config()
+            except (ValueError, OSError) as e:
+                log_general.error(f"failed to reload config.json: {e}")
     
     def _validate_config(self) -> None:
         """Validate that critical configuration fields are properly set."""
