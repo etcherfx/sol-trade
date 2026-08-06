@@ -317,9 +317,9 @@ def perform_analysis() -> None:
         for col in last_rows_pivoted.columns:
             value = last_rows_pivoted.loc[idx, col]
             
-            if idx == "Entry Signal" and value:
+            if idx == "Entry Signal" and value == 1:
                 value_str = "[bold green]✓ BUY[/bold green]"
-            elif idx == "Exit Signal" and value:
+            elif idx == "Exit Signal" and value == 1:
                 value_str = "[bold red]✗ SELL[/bold red]"
             elif idx in ["Entry Signal", "Exit Signal"]:
                 value_str = "[dim]-[/dim]"
