@@ -6,7 +6,7 @@ from typing import Any
 from solders.pubkey import Pubkey
 
 from sol_trade.config import config
-from sol_trade.log import log_general
+from sol_trade.log import enable_console_logging, log_general
 from sol_trade.utils import handle_rate_limiting, run_async
 
 
@@ -45,6 +45,7 @@ def find_top_holders(token_mint: str, limit: int = 20) -> list[dict[str, Any]]:
 
 def main() -> None:
     """CLI entry point for whale discovery."""
+    enable_console_logging()
     if len(sys.argv) < 2:
         print("Usage: uv run -m sol_trade.whale_discovery TOKEN_MINT [LIMIT]")
         print()

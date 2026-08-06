@@ -4,7 +4,6 @@ import sys
 
 from sol_trade import trading, ui
 from sol_trade.config import config
-from sol_trade.log import silence_console_logging
 
 
 def main() -> None:
@@ -17,7 +16,6 @@ def main() -> None:
         )
         sys.exit(1)
 
-    silence_console_logging()
     state = ui.UIState()
     trading.start_trading(state)
     try:

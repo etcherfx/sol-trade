@@ -58,6 +58,9 @@ def setup_logger(
     logger.addHandler(file_handler)
     console_handler = AutoFlushStreamHandler(sys.stdout)
     console_handler.setFormatter(CustomFormatter())
+    # Console output is off by default: the full-screen UI owns the terminal.
+    # CLI entry points opt back in via enable_console_logging().
+    console_handler.setLevel(logging.CRITICAL + 1)
     logger.addHandler(console_handler)
 
     if add_to_general:
@@ -112,9 +115,9 @@ def get_recent_logs(limit: int | None = None) -> list[tuple[int, float, str]]:
     return memory_handler.snapshot(limit)
 
 
-def silence_console_logging():
-    """Raise console handler levels so legacy log lines stay out of the UI."""
+def enable_console_logging() -> None:
+    """Restore console output for CLI entry points."""
     for logger in (log_general, log_transaction):
         for handler in logger.handlers:
             if isinstance(handler, AutoFlushStreamHandler):
-                handler.setLevel(logging.CRITICAL + 1)
+                handler.setLevel(logging.DEBUG)
