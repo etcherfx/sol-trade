@@ -22,7 +22,7 @@ from sol_trade.strategy import (
 )
 from sol_trade.transactions import perform_swap
 from sol_trade.ui import TokenStatus, UIState
-from sol_trade.wallet import find_balance
+from sol_trade.wallet import find_balance, minimum_sol_needed
 
 config_instance = config()
 primary_mint: str = config_instance.primary_mint
@@ -354,6 +354,7 @@ def perform_analysis(state: UIState) -> None:
             setattr(s, "primary_balance", float(current_primary_balance or 0.0)),
             setattr(s, "portfolio_value", float(current_total_value or 0.0)),
             setattr(s, "total_profit", float(total_profit or 0.0)),
+            setattr(s, "reserved_fees", minimum_sol_needed()),
             setattr(s, "tokens", tokens),
             setattr(s, "last_refresh", datetime.now(UTC).strftime("%H:%M:%S")),
         )

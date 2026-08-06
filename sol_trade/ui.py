@@ -126,7 +126,7 @@ def _wallet_fragments(state: UIState) -> StyleAndTextTuples:
     profit_style = "bold green" if state.total_profit >= 0 else "bold red"
     rows: list[tuple[str, str, str]] = [
         ("Primary Balance", f"{state.primary_balance:,.4f} USDC", ""),
-        ("Reserved for Fees", f"{state.reserved_fees:.2f} USDC", ""),
+        ("Reserved for Fees (SOL)", f"{state.reserved_fees:.4f} SOL", ""),
         ("Portfolio Value", _money(state.portfolio_value), ""),
         ("Total Profit", _money(state.total_profit), profit_style),
         ("Wallet", state.wallet_address, "dim"),
