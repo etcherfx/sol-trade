@@ -98,43 +98,49 @@ def calc_entry_price(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def calc_stoploss(df: pd.DataFrame) -> pd.DataFrame:
-    """Set a stop-loss level below the entry close."""
+    """Set a stop-loss level below the fill entry price."""
     sl = float(df.strategy_instance.stoploss)
-    df["stoploss"] = df["close"].iat[-1] * (1 - (sl / 100))
+    df["stoploss"] = df["entry_price"].iat[-1] * (1 - (sl / 100))
     return df
 
 
 def calc_takeprofit(df: pd.DataFrame) -> pd.DataFrame:
-    """Set a take-profit level above the entry close."""
+    """Set a take-profit level above the fill entry price."""
     tp = float(df.strategy_instance.takeprofit)
-    df["takeprofit"] = df["close"].iat[-1] * (1 + (tp / 100))
+    df["takeprofit"] = df["entry_price"].iat[-1] * (1 + (tp / 100))
     return df
 
 
 def calc_trailing_stoploss(df: pd.DataFrame) -> pd.DataFrame:
-    """Set a trailing stop that ratchets up after a target gain."""
+    """Set a trailing stop that ratchets up after a target gain.
+
+    The running peak is carried across cycles via the ``highest_price``
+    column, so the stop never resets when a new data window starts.
+    """
     tsl = float(df.strategy_instance.trailing_stoploss)
     tslt = float(df.strategy_instance.trailing_stoploss_target)
 
-    high_prices = df["high"]
+    entry_price = float(df["entry_price"].iat[0])
+    # Resume the carried peak if present; otherwise start from the window.
+    if "highest_price" in df.columns and not pd.isna(df["highest_price"].iat[0]):
+        highest_price = float(df["highest_price"].iat[0])
+    else:
+        highest_price = float(df["high"].iat[0])
+
     trailing_stop = []
     tracking_started = False
-    highest_price = df["high"].iat[0]
-
-    for price in high_prices:
-        if not tracking_started and price >= df["entry_price"].iat[0] * (
-            1 + tslt / 100
-        ):
+    for price in df["high"]:
+        if not tracking_started and price >= entry_price * (1 + tslt / 100):
             tracking_started = True
-            highest_price = price
+            highest_price = max(highest_price, price)
         if tracking_started:
             highest_price = max(highest_price, price)
-            stop_price = highest_price * (1 - tsl / 100)
-            trailing_stop.append(stop_price)
+            trailing_stop.append(highest_price * (1 - tsl / 100))
         else:
             trailing_stop.append(None)
 
     df["trailing_stoploss"] = trailing_stop
     df["trailing_stoploss_target"] = df["entry_price"] * (1 + tslt / 100)
+    df["highest_price"] = highest_price  # persist the peak for the next cycle
 
     return df

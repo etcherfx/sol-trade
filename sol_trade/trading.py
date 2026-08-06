@@ -13,7 +13,6 @@ from sol_trade.config import config
 from sol_trade.confluence import _is_protective_exit
 from sol_trade.log import log_general, log_transaction
 from sol_trade.strategy import (
-    calc_entry_price,
     calc_stoploss,
     calc_takeprofit,
     calc_trailing_stoploss,
@@ -21,8 +20,8 @@ from sol_trade.strategy import (
     strategy,
 )
 from sol_trade.transactions import perform_swap
-from sol_trade.ui import TokenStatus, UIState
-from sol_trade.wallet import find_balance, minimum_sol_needed
+from sol_trade.ui import Holding, TokenStatus, UIState
+from sol_trade.wallet import find_balance, get_all_token_holdings, minimum_sol_needed
 
 config_instance = config()
 primary_mint: str = config_instance.primary_mint
@@ -90,12 +89,12 @@ def _paper_buy(
     secondary_mint: str,
     primary_mint_symbol: str,
     secondary_mint_symbol: str,
-) -> bool:
-    """Simulate a buy at the latest close, updating the paper ledger."""
+) -> float | None:
+    """Simulate a buy at the latest close; returns the amount bought or None."""
     price = float(df["close"].iat[-1])
     if price <= 0:
         log_general.warning("paper buy skipped: no usable price")
-        return False
+        return None
     bought = input_amount / price
     _balance_cache.set(secondary_mint, _balance_cache.get(secondary_mint) + bought)
     _balance_cache.set(primary_mint, _balance_cache.get(primary_mint) - input_amount)
@@ -103,7 +102,7 @@ def _paper_buy(
         f"PAPER BUY {bought:.4f} {secondary_mint_symbol} for "
         f"{input_amount:.4f} {primary_mint_symbol} at {price:.6f}."
     )
-    return True
+    return bought
 
 
 def _paper_sell(
@@ -113,20 +112,20 @@ def _paper_sell(
     secondary_mint: str,
     primary_mint_symbol: str,
     secondary_mint_symbol: str,
-) -> bool:
-    """Simulate a sell at the latest close, updating the paper ledger."""
+) -> float | None:
+    """Simulate a sell at the latest close; returns the proceeds or None."""
     price = float(df["close"].iat[-1])
     if price <= 0:
         log_general.warning("paper sell skipped: no usable price")
-        return False
+        return None
     proceeds = input_amount * price
     _balance_cache.set(primary_mint, _balance_cache.get(primary_mint) + proceeds)
-    _balance_cache.set(secondary_mint, 0.0)
+    _balance_cache.set(secondary_mint, _balance_cache.get(secondary_mint) - input_amount)
     log_transaction.info(
         f"PAPER SELL {input_amount:.4f} {secondary_mint_symbol} for "
         f"{proceeds:.4f} {primary_mint_symbol} at {price:.6f}."
     )
-    return True
+    return proceeds
 
 
 def fetch_prices(mints: list[str]) -> dict[str, float]:
@@ -247,10 +246,12 @@ def perform_analysis(state: UIState) -> None:
                     columns_to_merge = [
                         "position",
                         "entry_price",
+                        "position_size",
                         "takeprofit",
                         "stoploss",
                         "trailing_stoploss",
                         "trailing_stoploss_target",
+                        "highest_price",
                     ]
 
                     for col in columns_to_merge:
@@ -344,6 +345,31 @@ def perform_analysis(state: UIState) -> None:
                 entry_price=_as_float_or_none(last.get("entry_price")),
             )
         )
+    # Full-account view: every token the wallet holds, valued where a price exists.
+    full_holdings: list[Holding] = []
+    total_account_value = float(current_total_value or 0.0)
+    try:
+        raw_holdings = get_all_token_holdings()
+        mint_to_symbol = {
+            config().primary_mint: primary_mint_symbol,
+            config().sol_mint: "SOL",
+            **dict(zip(secondary_mints, secondary_mint_symbols)),
+        }
+        known_prices = {mint: price for mint, price in price_map.items() if price > 0}
+        total = 0.0
+        for mint, balance in raw_holdings.items():
+            price = known_prices.get(mint)
+            value = balance * price if price else None
+            if value:
+                total += value
+            full_holdings.append(
+                Holding(mint=mint, symbol=mint_to_symbol.get(mint), balance=balance, value=value)
+            )
+        if total > 0:
+            total_account_value = total
+    except Exception:  # noqa: BLE001 - holdings are display-only; keep the previous view
+        log_general.debug("failed to fetch full account holdings")
+
     state.update(
         lambda s: (
             setattr(s, "primary_balance", float(current_primary_balance or 0.0)),
@@ -351,6 +377,8 @@ def perform_analysis(state: UIState) -> None:
             setattr(s, "total_profit", float(total_profit or 0.0)),
             setattr(s, "reserved_fees", minimum_sol_needed()),
             setattr(s, "tokens", tokens),
+            setattr(s, "full_holdings", full_holdings),
+            setattr(s, "total_account_value", total_account_value),
             setattr(s, "last_refresh", datetime.now(UTC).strftime("%H:%M:%S")),
         )
     )
@@ -425,7 +453,18 @@ def handle_buy_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: str
             )
         )
         if is_swapped:
-            df = calc_entry_price(df)
+            bought = (
+                float(is_swapped["out_amount"])
+                if isinstance(is_swapped, dict)
+                else float(is_swapped)
+            )
+            fill_price = (
+                input_amount / bought
+                if bought > 0
+                else float(df["close"].iat[-1])
+            )
+            df["entry_price"] = fill_price
+            df["position_size"] = bought
             df = calc_stoploss(df)
             df = calc_takeprofit(df)
             df = calc_trailing_stoploss(df)
@@ -438,6 +477,38 @@ def handle_buy_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: str
     return False
 
 
+def _close_position_bookkeeping(df: pd.DataFrame, sold_amount: float) -> pd.DataFrame:
+    """Update position columns after a sell; partial closes keep the position.
+
+    A sell of less than ``position_size`` keeps the position open at the
+    reduced size with the same (weighted-average) entry price and risk levels.
+    """
+    remaining = None
+    if "position_size" in df.columns:
+        remaining = _as_float(df["position_size"].iat[-1]) - sold_amount
+    if remaining is None or remaining <= 1e-9:
+        # Full close: clear the position and all risk columns.
+        df = set_position(df, False)
+        drop_cols = [
+            c
+            for c in (
+                "stoploss",
+                "entry_price",
+                "trailing_stoploss",
+                "trailing_stoploss_target",
+                "takeprofit",
+                "position_size",
+                "highest_price",
+            )
+            if c in df.columns
+        ]
+        df = df.drop(columns=drop_cols)
+    else:
+        df["position"] = True
+        df["position_size"] = remaining
+    return df
+
+
 def handle_sell_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: str, secondary_mint_symbol: str) -> bool:
     """Execute a sell when the last bar has an exit signal; returns success."""
     input_amount = _balance_cache.get(secondary_mint)
@@ -445,6 +516,13 @@ def handle_sell_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: st
 
     if df["exit"].iat[-1] == 1:
         mint_symbol = cast(str, df["symbol"].iat[0])
+
+        # Nothing to sell — mirrors the buy-side balance guard.
+        if input_amount <= 0:
+            log_general.warning(
+                f"no sellable {secondary_mint_symbol} balance; skipping sell signal"
+            )
+            return False
 
         # Protective exits (stop-loss / take-profit / trailing stop) always execute at 100%
         if not _is_protective_exit(df):
@@ -490,16 +568,7 @@ def handle_sell_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: st
             )
         )
         if is_swapped:
-            df = set_position(df, False)
-            df = df.drop(
-                columns=[
-                    "stoploss",
-                    "entry_price",
-                    "trailing_stoploss",
-                    "trailing_stoploss_target",
-                    "takeprofit",
-                ]
-            )
+            df = _close_position_bookkeeping(df, input_amount)
             save_dataframe_to_csv(df, data_file_path)
             _balance_cache.invalidate(secondary_mint)
             _balance_cache.invalidate(primary_mint)

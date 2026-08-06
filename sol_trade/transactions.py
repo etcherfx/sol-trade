@@ -186,8 +186,8 @@ async def perform_swap(
     output_token_mint: str,
     sent_token_symbol: str,
     output_token_symbol: str,
-) -> bool:
-    """Swap tokens via Jupiter; returns True when the swap succeeded."""
+) -> dict[str, Any] | None:
+    """Swap tokens via Jupiter; returns fill amounts on success, else None."""
     log_general.info("SolTrade is taking a market position.")
 
     order = execute_result = None
@@ -220,7 +220,7 @@ async def perform_swap(
         log_general.error(
             "SolTrade failed to complete the transaction after 3 attempts."
         )
-        return False
+        return None
 
     # Calculate the actual amounts from the execution result
     decimals = config().decimals(output_token_mint)
@@ -236,4 +236,4 @@ async def perform_swap(
     log_transaction.info(
         f"SolTrade sold {sent_amount} {sent_token_symbol} for {bought_amount:.2f} {output_token_symbol}."
     )
-    return True
+    return {"out_amount": bought_amount, "sent_amount": sent_amount}

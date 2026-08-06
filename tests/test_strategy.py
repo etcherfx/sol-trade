@@ -63,3 +63,34 @@ def test_risk_calculation_uses_own_instance(default_strategy):
     assert float(s["stoploss"].iat[-1]) == pytest.approx(110.0 * 0.95)
     assert float(s["takeprofit"].iat[-1]) == pytest.approx(110.0 * 1.10)
     assert "trailing_stoploss" in s.columns
+
+
+def test_trailing_stoploss_carries_peak_across_windows(default_strategy):
+    # Window 1: last-bar high spikes to 1.20, far above entry (1.01) and the
+    # 1.05x target, so the trailing stop activates at 1.20 * 0.98.
+    df1 = pd.DataFrame(
+        {"close": [1.00, 1.00, 1.00, 1.01], "high": [1.00, 1.05, 1.10, 1.20], "low": [0.99, 0.99, 0.99, 1.00]}
+    )
+    s1 = strategy(df1)
+    s1 = calc_entry_price(s1)
+    s1 = calc_trailing_stoploss(s1)
+    assert float(s1["trailing_stoploss"].iat[-1]) == pytest.approx(1.20 * 0.98)
+
+    df2 = pd.DataFrame(
+        {"close": [1.04, 1.02, 1.01], "high": [1.07, 1.05, 1.04], "low": [1.03, 1.01, 1.00]}
+    )
+    # Without the carry, the same window would start from its own first high.
+    # (Computed before s2 mutates df2 with the carried column.)
+    s3 = strategy(df2.copy())
+    s3 = calc_entry_price(s3)
+    s3 = calc_trailing_stoploss(s3)
+    assert float(s3["highest_price"].iat[-1]) < 1.20
+
+    # Window 2: fresh window with LOWER highs — the carried peak (1.20) must
+    # persist instead of resetting to the new window's first high.
+    s2 = strategy(df2.copy())
+    s2 = calc_entry_price(s2)
+    s2["highest_price"] = float(s1["highest_price"].iat[-1])  # as the CSV carry-over
+    s2 = calc_trailing_stoploss(s2)
+    assert float(s2["highest_price"].iat[-1]) == pytest.approx(1.20)
+    assert float(s2["trailing_stoploss"].iat[-1]) == pytest.approx(1.20 * 0.98)
