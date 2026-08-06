@@ -9,6 +9,10 @@ wheels/
 # Virtual environments
 .venv
 
+# Caches
+.pytest_cache/
+.ruff_cache/
+
 # SolTrade files
 config.json
 .env

@@ -6,7 +6,6 @@
   "secondary_mints": ["So11111111111111111111111111111111111111112"],
   "secondary_mint_symbols": ["SOL"],
   "price_update_seconds": 60,
-  "trading_interval_minutes": 1,
   "max_slippage": 50,
   "strategy": "default",
   "data_exchange": "okx",

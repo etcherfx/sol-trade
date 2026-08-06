@@ -78,8 +78,8 @@ Secrets live in the git-ignored `.env` file:
 | `jup_api` | Jupiter Swap API endpoint | `https://api.jup.ag/swap/v2` |
 | `primary_mint` / `primary_mint_symbol` | The token you pay with (usually a stablecoin) | `EPjF..v` / `USDC` |
 | `secondary_mints` / `secondary_mint_symbols` | The token(s) you want to trade | `[So11..2]` / `[SOL]` |
+| `sol_mint` | Mint address of native SOL | `So11111111111111111111111111111111111111112` |
 | `price_update_seconds` | How often token prices refresh | `60` |
-| `trading_interval_minutes` | How often the bot runs its analysis | `1` |
 | `max_slippage` | Maximum accepted slippage in BPS (100 BPS = 1%) | `50` |
 | `strategy` | The strategy to trade with | `default` |
 | `data_exchange` | Exchange used for candlestick data (via ccxt) | `okx` |
@@ -98,6 +98,9 @@ Secrets live in the git-ignored `.env` file:
 | `sentiment_pause_hours` | How long a sentiment block lasts | `4` |
 | `sentiment_threshold` | Per-token block threshold (-1 to +1) | `-0.5` |
 | `sentiment_crash_threshold` | Market-wide crash threshold (-1 to +1) | `-0.7` |
+| `whale_data_path` | Where whale snapshots are stored | `data/whale_data.json` |
+| `regime_data_path` | Where market regime data is stored | `data/regime_data.json` |
+| `sentiment_data_path` | Where sentiment data is stored | `data/sentiment_data.json` |
 
 ## How it works
 
@@ -109,6 +112,18 @@ SolTrade runs a continuous loop:
 4. **Protect** — open positions are tracked and persisted to disk, so a restart resumes where it left off.
 
 Optional layers — whale tracking, a confluence sizing filter, market regime detection, and a sentiment circuit breaker — operate between the signal and the trade. See [Advanced features](#advanced-features) for details.
+
+## Terminal UI
+
+The bot runs inside a full-screen terminal UI:
+
+| Screen | Key | Shows |
+| --- | --- | --- |
+| Dashboard | `1` | Live wallet balance, portfolio value, profit, and per-token indicators |
+| Logs | `2` | Full log history (scroll with arrow keys, `PgUp`/`PgDn`, `Home`/`End`) |
+| Help | `3` | Keybindings and general info |
+
+`Tab` cycles through the screens; `q` or `Ctrl-C` quits. The bot keeps trading in the background while you browse the UI.
 
 ## Features
 
