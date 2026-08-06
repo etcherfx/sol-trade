@@ -142,6 +142,7 @@ def test_create_order_escalates_slippage_on_quote_failure(monkeypatch):
     )
     monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: client)
     monkeypatch.setattr(config(), "decimals", lambda mint: 1e9)
+    monkeypatch.setattr(config(), "max_slippage", 50)
 
     result = asyncio.run(
         transactions.create_order(
