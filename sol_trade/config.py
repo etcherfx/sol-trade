@@ -14,7 +14,6 @@ from sol_trade.utils import run_async
 
 class Config:
     def __init__(self):
-        self.api_key: str = ""
         self.jupiter_api_key: str = ""
         self.private_key: str = ""
         self.rpc_https: str = "https://api.mainnet-beta.solana.com"
@@ -28,6 +27,8 @@ class Config:
         self.trading_interval_minutes: int = 1
         self.max_slippage: int = 50
         self.strategy: str = "default"
+        self.data_exchange: str = "okx"
+        self.candles_path: str = "data/candles.db"
         self.path = os.path.join(os.path.dirname(__file__), "..", "config.json")
         self.dotenv_path = os.path.join(os.path.dirname(__file__), "..", ".env")
         load_dotenv(self.dotenv_path)
@@ -57,7 +58,6 @@ class Config:
 
     def load_config(self):
         default_config: dict[str, Any] = {
-            "api_key": "",
             "jupiter_api_key": "",
             "private_key": "",
             "rpc_https": "https://api.mainnet-beta.solana.com",
@@ -70,6 +70,8 @@ class Config:
             "trading_interval_minutes": 1,
             "max_slippage": 50,
             "strategy": "default",
+            "data_exchange": "okx",
+            "candles_path": "data/candles.db",
 
             # Whale Tracker
             "whale_tracking_enabled": True,
@@ -107,7 +109,6 @@ class Config:
         # Credentials: environment variables (.env) take precedence over config.json
         env_overrides = {
             "private_key": "SOLTRADE_PRIVATE_KEY",
-            "api_key": "SOLTRADE_API_KEY",
             "jupiter_api_key": "SOLTRADE_JUPITER_API_KEY",
         }
         for attr, env_var in env_overrides.items():
@@ -121,9 +122,6 @@ class Config:
         """Validate that critical configuration fields are properly set."""
         if not self.private_key or self.private_key == "":
             log_general.warning("Private key is not set in .env or config.json. Bot cannot trade.")
-        
-        if not self.api_key or self.api_key == "":
-            log_general.warning("CryptoCompare API key is not set in .env or config.json. Price data unavailable.")
         
         if not self.jupiter_api_key or self.jupiter_api_key == "":
             log_general.warning("Jupiter API key is not set. Optional unless required by your api.jup.ag endpoint.")

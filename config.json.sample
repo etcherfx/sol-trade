@@ -9,6 +9,8 @@
   "trading_interval_minutes": 1,
   "max_slippage": 50,
   "strategy": "default",
+  "data_exchange": "okx",
+  "candles_path": "data/candles.db",
 
   "whale_tracking_enabled": true,
   "whale_wallets": {},

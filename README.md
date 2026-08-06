@@ -48,7 +48,7 @@ A hard fork of [noahtheprogrammer/soltrade](https://github.com/noahtheprogrammer
 
 3. Configure credentials and tokens:
 
-   - Copy `.env.sample` to `.env` and set `SOLTRADE_PRIVATE_KEY` (your Solana wallet) and `SOLTRADE_API_KEY` (your [CryptoCompare](https://www.cryptocompare.com/cryptopian/api-keys) API key).
+   - Copy `.env.sample` to `.env` and set `SOLTRADE_PRIVATE_KEY` (your Solana wallet).
    - In `config.json`, set `secondary_mints` / `secondary_mint_symbols` — the token(s) you want to trade.
 
 4. Start the bot:
@@ -68,7 +68,6 @@ Secrets live in the git-ignored `.env` file:
 | Variable | Purpose |
 | --- | --- |
 | `SOLTRADE_PRIVATE_KEY` | Solana wallet private key (base58) |
-| `SOLTRADE_API_KEY` | [CryptoCompare](https://www.cryptocompare.com/cryptopian/api-keys) API key, used for candlestick data |
 | `SOLTRADE_JUPITER_API_KEY` | Jupiter API key — optional, sent only if set |
 
 ### Core settings
@@ -83,6 +82,8 @@ Secrets live in the git-ignored `.env` file:
 | `trading_interval_minutes` | How often the bot runs its analysis | `1` |
 | `max_slippage` | Maximum accepted slippage in BPS (100 BPS = 1%) | `50` |
 | `strategy` | The strategy to trade with | `default` |
+| `data_exchange` | Exchange used for candlestick data (via ccxt) | `okx` |
+| `candles_path` | Local SQLite store for candlestick history | `data/candles.db` |
 
 ### Advanced settings
 

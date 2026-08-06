@@ -5,8 +5,7 @@ import os
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import requests
-
+from sol_trade import data_source
 from sol_trade.config import config
 from sol_trade.log import log_general
 
@@ -50,17 +49,8 @@ def _should_refresh() -> bool:
 
 
 def _fetch_sol_usdc_daily() -> list:
-    """Fetch SOL/USDC daily candlestick data from CryptoCompare."""
-    url = "https://min-api.cryptocompare.com/data/v2/histoday"
-    params = {"fsym": "SOL", "tsym": "USDC", "limit": 30}
-    if config().api_key:
-        params["api_key"] = config().api_key
-    response = requests.get(url, params=params, timeout=30)
-    response.raise_for_status()
-    data = response.json()
-    if data.get("Response") != "Success":
-        raise ValueError(f"CryptoCompare error: {data.get('Message', 'Unknown')}")
-    return data["Data"]
+    """Fetch SOL/USDC daily candlestick data."""
+    return data_source.fetch_candles("SOL", "USDC", "1d", 30)
 
 
 def _compute_sma(prices: list, period: int) -> list:

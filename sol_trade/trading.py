@@ -14,6 +14,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from sol_trade import data_source
 from sol_trade.config import config
 from sol_trade.confluence import _is_protective_exit
 from sol_trade.log import log_general, log_transaction, silence_console_logging
@@ -33,7 +34,6 @@ primary_mint: str = config_instance.primary_mint
 primary_mint_symbol: str = config_instance.primary_mint_symbol
 secondary_mints: list[str] = config_instance.secondary_mints
 secondary_mint_symbols: list[str] = config_instance.secondary_mint_symbols
-api_key: str = config_instance.api_key
 trading_interval_minutes: int = config_instance.trading_interval_minutes
 price_update_seconds: int = config_instance.price_update_seconds
 whale_tracking_enabled: bool = config_instance.whale_tracking_enabled
@@ -113,23 +113,12 @@ live_display: Live | None = None
 
 
 def fetch_candlestick(primary_mint_symbol: str, secondary_mint_symbol: str) -> dict[str, Any]:
-    """Fetch candlestick data from CryptoCompare API."""
-    url = "https://min-api.cryptocompare.com/data/v2/histominute"
-    headers = {"authorization": api_key}
-    params: dict[str, str | int] = {
-        "tsym": primary_mint_symbol,
-        "fsym": secondary_mint_symbol,
-        "limit": 50,
-        "aggregate": trading_interval_minutes,
-    }
+    """Fetch candlestick data from the configured market data source."""
     try:
-        response = _http_session.get(url, headers=headers, params=params, timeout=10)
-        response.raise_for_status()
-        response_json = cast(dict[str, Any], response.json())
-        if response_json.get("Response") == "Error":
-            log_general.error(response_json.get("Message"))
-            sys.exit()
-        return response_json
+        candles = data_source.fetch_candles(
+            secondary_mint_symbol, primary_mint_symbol, "1m", 50
+        )
+        return {"Data": {"Data": candles}}
     except Exception as e:  # noqa: BLE001 - candlestick fetch failure
         log_general.error(f"Failed to fetch candlestick data: {e}")
         sys.exit()
@@ -485,7 +474,7 @@ def start_trading():
     global live_display
 
     silence_console_logging()
-    log_general.info("Soltrade has now initialized the trading algorithm.")
+    log_general.info("SolTrade has now initialized the trading algorithm.")
 
     with Live(console=console, refresh_per_second=4, transient=False) as live:
         live_display = live
