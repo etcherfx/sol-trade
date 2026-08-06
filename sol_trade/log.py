@@ -1,6 +1,8 @@
 import logging
 import os
 import sys
+import threading
+from collections import deque
 from logging import StreamHandler
 from logging.handlers import RotatingFileHandler
 from typing import ClassVar
@@ -72,6 +74,42 @@ log_general = setup_logger("general_logger", "general.log", level=logging.DEBUG)
 log_transaction = setup_logger(
     "transaction_logger", "transaction.log", add_to_general=True, level=logging.DEBUG
 )
+
+
+class MemoryLogHandler(logging.Handler):
+    """Captures recent log records in memory for the terminal UI."""
+
+    def __init__(self, capacity: int = 1000) -> None:
+        super().__init__()
+        self._records: deque = deque(maxlen=capacity)
+        self._lock = threading.Lock()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            line = self.format(record)
+            with self._lock:
+                self._records.append((record.levelno, record.created, line))
+        except Exception:  # noqa: BLE001 - logging handler error protocol
+            self.handleError(record)
+
+    def snapshot(self, limit: int | None = None) -> list[tuple[int, float, str]]:
+        """Return records as ``(levelno, created, formatted_line)``."""
+        with self._lock:
+            items = list(self._records)
+        return items if limit is None else items[-limit:]
+
+
+memory_handler = MemoryLogHandler()
+memory_handler.setFormatter(
+    logging.Formatter("%(asctime)s %(levelname)-8s %(message)s", datefmt="%H:%M:%S")
+)
+log_general.addHandler(memory_handler)
+log_transaction.addHandler(memory_handler)
+
+
+def get_recent_logs(limit: int | None = None) -> list[tuple[int, float, str]]:
+    """Return the most recent log records for the terminal UI."""
+    return memory_handler.snapshot(limit)
 
 
 def silence_console_logging():
