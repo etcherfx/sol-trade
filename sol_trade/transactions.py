@@ -14,20 +14,33 @@ class OrderError(Exception):
 
 
 def _sign_order_transaction(transaction_b64: str) -> str:
-    """Partially sign a Jupiter order transaction, preserving its signature slots.
+    """Partially sign a Jupiter order transaction at the wallet's own slot.
 
-    JupiterZ RFQ orders carry two signature slots: the taker's plus a
-    market-maker placeholder that /execute fills server-side. Preserve the slot
-    count — rebuilding with a single signature corrupts the message header and
-    /execute rejects it with 400.
+    Gasless JupiterZ orders carry two signature slots and make Jupiter's
+    signature-fee payer the FIRST required signer — the taker is slot 1, not
+    slot 0. Signing the wrong slot yields ``Invalid signature for transaction``
+    from /execute, so the wallet's slot is located from the message's account
+    keys and the other slots are left as placeholders for /execute.
     """
     raw_txn = VersionedTransaction.from_bytes(base64.b64decode(transaction_b64))
-    signature = config().keypair.sign_message(to_bytes_versioned(raw_txn.message))
+    message = raw_txn.message
+    our_pubkey = config().public_address
+    signature = config().keypair.sign_message(to_bytes_versioned(message))
+
     signatures = list(raw_txn.signatures)
     if not signatures:
         raise OrderError("Transaction has no signature slots")
-    signatures[0] = signature
-    signed_txn = VersionedTransaction.populate(raw_txn.message, signatures)
+
+    required = message.header.num_required_signatures
+    signer_slots = [
+        i for i in range(required) if message.account_keys[i] == our_pubkey
+    ]
+    if not signer_slots:
+        raise OrderError("Wallet is not a required signer of this transaction")
+    for slot in signer_slots:
+        signatures[slot] = signature
+
+    signed_txn = VersionedTransaction.populate(message, signatures)
     return base64.b64encode(bytes(signed_txn)).decode("utf-8")
 
 
