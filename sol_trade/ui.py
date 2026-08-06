@@ -21,7 +21,7 @@ from typing import Any
 from prompt_toolkit.application import Application
 from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import HSplit, VSplit, Window
+from prompt_toolkit.layout import HSplit, Layout, VSplit, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.styles import Style
 
@@ -271,7 +271,9 @@ def help_fragments() -> StyleAndTextTuples:
 # ------------------------------------------------------------- application
 
 
-def build_application(state: UIState) -> Application:
+def build_application(
+    state: UIState, output: Any | None = None, input: Any | None = None
+) -> Application:
     """Build the prompt_toolkit application (does not run it)."""
     kb = KeyBindings()
     screen = {"name": "dashboard"}
@@ -423,21 +425,31 @@ def build_application(state: UIState) -> Application:
             event.app.invalidate()
 
     app = Application(
-        layout=containers["dashboard"],
+        layout=Layout(containers["dashboard"]),
         key_bindings=kb,
         style=Style.from_dict(
             {"header": "bg:#0d2b45 #ffffff", "footer": "bg:#0d2b45 #9adcff"}
         ),
         full_screen=True,
+        output=output,
+        input=input,
     )
+    return app
+
+
+async def _run_app(app: Application) -> None:
+    """Run the app with a 0.5s repaint clock scheduled inside its event loop."""
 
     async def _clock() -> None:
-        while app.is_running:
+        while True:
             app.invalidate()
             await asyncio.sleep(0.5)
 
-    app.create_background_task(_clock())
-    return app
+    clock = asyncio.create_task(_clock())
+    try:
+        await app.run_async()
+    finally:
+        clock.cancel()
 
 
 def run_ui(state: UIState) -> None:
@@ -450,7 +462,7 @@ def run_ui(state: UIState) -> None:
             setattr(s, "wallet_address", _short_address(str(config().public_address))),
         )
     )
-    build_application(state).run()
+    asyncio.run(_run_app(build_application(state)))
 
 
 def _short_address(address: str) -> str:
