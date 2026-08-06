@@ -1,6 +1,9 @@
 import asyncio
+import json
+import os
 import threading
 import time
+from collections.abc import Callable, Coroutine
 from concurrent.futures import Future
 from functools import wraps
 from typing import Any
@@ -31,7 +34,7 @@ threading.Thread(
 _async_loop_ready.wait()
 
 
-def run_async(coro: Any) -> Any:
+def run_async(coro: Coroutine[Any, Any, Any]) -> Any:
     """Run a coroutine on the shared background loop and block for its result.
 
     Safe to call from synchronous code and from inside another running event
@@ -42,10 +45,20 @@ def run_async(coro: Any) -> Any:
     return future.result()
 
 
-def handle_rate_limiting(retry_attempts=3, retry_delay=10):
-    def decorator(client_function):
+def handle_rate_limiting(
+    retry_attempts: int = 3, retry_delay: int = 10
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Retry RPC calls that hit Solana's HTTP rate limiter.
+
+    Returns ``None`` after ``retry_attempts`` persistent rate-limit failures so
+    callers can degrade gracefully.
+    """
+
+    def decorator(
+        client_function: Callable[..., Any],
+    ) -> Callable[..., Any]:
         @wraps(client_function)
-        def wrapper(*args, **kwargs):
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
             for _ in range(retry_attempts):
                 try:
                     return client_function(*args, **kwargs)
@@ -62,3 +75,22 @@ def handle_rate_limiting(retry_attempts=3, retry_delay=10):
         return wrapper
 
     return decorator
+
+
+def load_json_data(path: str, default: Any) -> Any:
+    """Load JSON from disk, returning ``default`` when missing or corrupt."""
+    if not os.path.exists(path):
+        return default
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, KeyError) as e:
+        log_general.warning(f"failed to load {path}: {e}")
+        return default
+
+
+def save_json_data(path: str, data: Any) -> None:
+    """Persist data as pretty-printed JSON, creating parent directories."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)

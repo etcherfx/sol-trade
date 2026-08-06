@@ -26,14 +26,14 @@ class CustomFormatter(logging.Formatter):
         logging.CRITICAL: bold_red + format + reset,
     }
 
-    def format(self, record) -> str:
+    def format(self, record: logging.LogRecord) -> str:
         log_fmt = self.FORMATS.get(record.levelno)
         formatter = logging.Formatter(log_fmt, datefmt="%Y-%m-%d %H:%M:%S")
         return formatter.format(record)
 
 
 class AutoFlushStreamHandler(StreamHandler):
-    def emit(self, record):
+    def emit(self, record: logging.LogRecord):
         super().emit(record)
         self.flush()
 

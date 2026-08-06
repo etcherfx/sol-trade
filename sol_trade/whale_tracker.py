@@ -1,16 +1,19 @@
 """Whale wallet tracker — monitors token balance changes for configured whale wallets."""
 
-import json
-import os
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from solana.rpc.core import TokenAccountOpts
 from solders.pubkey import Pubkey
 
 from sol_trade.config import config
 from sol_trade.log import log_general
-from sol_trade.utils import handle_rate_limiting, run_async
+from sol_trade.utils import (
+    handle_rate_limiting,
+    load_json_data,
+    run_async,
+    save_json_data,
+)
+from sol_trade.wallet import token_account_ui_amounts
 
 
 @handle_rate_limiting(retry_attempts=3, retry_delay=10)
@@ -23,48 +26,19 @@ def _get_wallet_token_balance(wallet: str, token_mint: str) -> float:
         balance = response.value / (10**9)
         return balance
 
-    response = run_async(
-        cfg.client.get_token_accounts_by_owner_json_parsed(
-            Pubkey.from_string(wallet),
-            TokenAccountOpts(mint=Pubkey.from_string(token_mint)),
-        )
-    ).to_json()
-    json_response = json.loads(response)
-    accounts = json_response.get("result", {}).get("value", [])
-    if not accounts:
-        return 0.0
-
-    # Sum across all token accounts for this mint (handles multiple ATA accounts)
-    total = 0.0
-    for account in accounts:
-        ui_amount = (
-            account["account"]["data"]["parsed"]["info"]["tokenAmount"]["uiAmount"]
-        )
-        if ui_amount is not None:
-            total += ui_amount
-    return total
+    amounts = token_account_ui_amounts(Pubkey.from_string(wallet), token_mint)
+    return sum(amounts)
 
 
 def _load_data() -> list[dict[str, Any]]:
     """Load whale snapshot data from disk."""
-    path = config().whale_data_path
-    if not os.path.exists(path):
-        return []
-    try:
-        with open(path, "r") as f:
-            data = json.load(f)
-            return data if isinstance(data, list) else []
-    except (json.JSONDecodeError, KeyError) as e:
-        log_general.warning(f"Failed to load whale data from {path}: {e}")
-        return []
+    data = load_json_data(config().whale_data_path, [])
+    return data if isinstance(data, list) else []
 
 
 def _save_data(data: list[dict[str, Any]]) -> None:
     """Persist whale snapshot data to disk."""
-    path = config().whale_data_path
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
+    save_json_data(config().whale_data_path, data)
 
 
 def update_whale_data() -> None:

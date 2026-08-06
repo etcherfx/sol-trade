@@ -1,7 +1,5 @@
 """Sentiment circuit breaker — monitors social sentiment and pauses trading on crashes."""
 
-import json
-import os
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -9,6 +7,7 @@ import requests
 
 from sol_trade.config import config
 from sol_trade.log import log_general
+from sol_trade.utils import load_json_data, save_json_data
 
 # Keyword scoring lists
 _POSITIVE_KEYWORDS = {
@@ -24,26 +23,15 @@ _NEGATIVE_KEYWORDS = {
 
 def _load_sentiment_data() -> dict[str, Any]:
     """Load sentiment data from disk."""
-    path = config().sentiment_data_path
-    if not os.path.exists(path):
-        return {}
-    try:
-        with open(path, "r") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, KeyError) as e:
-        log_general.warning(f"Failed to load sentiment data from {path}: {e}")
-        return {}
+    return load_json_data(config().sentiment_data_path, {})
 
 
 def _save_sentiment_data(data: dict[str, Any]) -> None:
     """Persist sentiment data to disk."""
-    path = config().sentiment_data_path
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
+    save_json_data(config().sentiment_data_path, data)
 
 
-def _score_text(text: str) -> tuple:
+def _score_text(text: str) -> tuple[int, int]:
     """Score a piece of text, returning (positive_count, negative_count)."""
     words = set(text.lower().split())
     pos = len(words & _POSITIVE_KEYWORDS)
@@ -51,7 +39,7 @@ def _score_text(text: str) -> tuple:
     return pos, neg
 
 
-def _fetch_reddit_posts(subreddit: str, limit: int = 25) -> list:
+def _fetch_reddit_posts(subreddit: str, limit: int = 25) -> list[dict]:
     """Fetch posts from a Reddit subreddit."""
     url = f"https://www.reddit.com/r/{subreddit}.json"
     params = {"limit": limit}

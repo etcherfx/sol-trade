@@ -22,6 +22,21 @@ _exchange: Any | None = None
 _PERIOD_SECONDS = {"1m": 60, "1d": 86400}
 
 
+def _candle_dict(
+    ts: int, open_: float, high: float, low: float, close: float, volume: float, total_volume: float | None = None
+) -> dict:
+    """Build the canonical candle shape; totalvolume defaults to volume."""
+    return {
+        "open": open_,
+        "high": high,
+        "low": low,
+        "close": close,
+        "volume": volume,
+        "totalvolume": total_volume if total_volume is not None else volume,
+        "time": ts,
+    }
+
+
 def get_exchange() -> Any:
     """Return the configured ccxt exchange client (lazily created)."""
     global _exchange
@@ -113,15 +128,7 @@ def _load_candles(symbol: str, timeframe: str, limit: int) -> list[dict]:
         log_general.warning(f"Candle store: failed to read candles: {e}")
         return []
     return [
-        {
-            "open": open_,
-            "high": high,
-            "low": low,
-            "close": close,
-            "volume": volume,
-            "totalvolume": total_volume,
-            "time": ts,
-        }
+        _candle_dict(ts, open_, high, low, close, volume, total_volume)
         for ts, open_, high, low, close, volume, total_volume in rows
     ][::-1]
 
@@ -141,15 +148,7 @@ def fetch_candles(
         exchange = get_exchange()
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
         candles = [
-            {
-                "open": open_,
-                "high": high,
-                "low": low,
-                "close": close,
-                "volume": volume,
-                "totalvolume": volume,
-                "time": ts // 1000,
-            }
+            _candle_dict(ts // 1000, open_, high, low, close, volume)
             for ts, open_, high, low, close, volume in ohlcv
         ]
         _store_candles(symbol, timeframe, candles)

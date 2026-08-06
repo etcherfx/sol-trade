@@ -1,39 +1,27 @@
 """Market regime detector — determines Solana market direction via SOL/USDC trend."""
 
-import json
-import os
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sol_trade import data_source
 from sol_trade.config import config
 from sol_trade.log import log_general
+from sol_trade.utils import load_json_data, save_json_data
 
 
 def _load_regime() -> dict[str, Any]:
     """Load persisted regime data from disk."""
-    path = config().regime_data_path
-    if not os.path.exists(path):
-        return {}
-    try:
-        with open(path, "r") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, KeyError) as e:
-        log_general.warning(f"Failed to load regime data from {path}: {e}")
-        return {}
+    return load_json_data(config().regime_data_path, {})
 
 
 def _save_regime(regime: str, modifier: float) -> None:
     """Persist regime data to disk."""
-    path = config().regime_data_path
-    os.makedirs(os.path.dirname(path), exist_ok=True)
     data = {
         "regime": regime,
         "modifier": modifier,
         "timestamp": datetime.now(UTC).isoformat(),
     }
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
+    save_json_data(config().regime_data_path, data)
 
 
 def _should_refresh() -> bool:
@@ -48,12 +36,12 @@ def _should_refresh() -> bool:
         return True
 
 
-def _fetch_sol_usdc_daily() -> list:
+def _fetch_sol_usdc_daily() -> list[dict]:
     """Fetch SOL/USDC daily candlestick data."""
     return data_source.fetch_candles("SOL", "USDC", "1d", 30)
 
 
-def _compute_sma(prices: list, period: int) -> list:
+def _compute_sma(prices: list[float], period: int) -> list[float]:
     """Compute simple moving average."""
     sma = []
     for i in range(len(prices)):

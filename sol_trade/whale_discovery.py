@@ -79,7 +79,7 @@ def main() -> None:
         print("  }")
 
     except Exception as e:  # noqa: BLE001 - CLI failure; log and exit
-        log_general.error(f"Failed to fetch holders: {e}")
+        log_general.error(f"failed to fetch holders: {e}")
         sys.exit(1)
 
 

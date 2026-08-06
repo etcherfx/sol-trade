@@ -7,14 +7,14 @@ from .base_strategy import BaseStrategy
 
 
 class DefaultStrategy(BaseStrategy):
-    def __init__(self, df: pd.DataFrame):
+    def __init__(self, df: pd.DataFrame) -> None:
         self.df = df
         self.stoploss = 5
         self.takeprofit = 10
         self.trailing_stoploss = 2
         self.trailing_stoploss_target = 5
 
-    def apply_strategy(self):
+    def apply_strategy(self) -> pd.DataFrame:
         if config().strategy == "default":
             ### Populate default indicators:
 

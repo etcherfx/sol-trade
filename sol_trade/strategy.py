@@ -6,8 +6,6 @@ import pandas as pd
 from sol_trade.config import config
 from sol_trade.log import log_general
 
-strategy_instance = None
-
 
 def ema(close: pd.Series, period: int) -> pd.Series:
     """Exponential moving average, TA-Lib equivalent.
@@ -59,19 +57,26 @@ def rsi(close: pd.Series, period: int = 14) -> pd.Series:
     return pd.Series(out, index=close.index)
 
 
-def load_strategy_class(strategy_name):
+def load_strategy_class(strategy_name: str) -> type:
+    """Load the strategy class for ``strategies/{name}_strategy.py``."""
     strategy_module = importlib.import_module(f"strategies.{strategy_name}_strategy")
     strategy_class = getattr(strategy_module, f"{strategy_name.capitalize()}Strategy")
     return strategy_class
 
 
-def strategy(df: pd.DataFrame):
-    global strategy_instance
+def strategy(df: pd.DataFrame) -> pd.DataFrame:
+    """Apply the configured strategy to the dataframe and return it.
+
+    The strategy instance is attached to the dataframe so risk parameters stay
+    bound to the token they were computed for (a plain attribute, since pandas
+    deep-copies ``df.attrs`` which would recurse through the instance's df).
+    """
     strategy_name = config().strategy or "default"
     try:
         StrategyClass = load_strategy_class(strategy_name)
-        strategy_instance = StrategyClass(df)
-        df = strategy_instance.apply_strategy()
+        instance = StrategyClass(df)
+        df = instance.apply_strategy()
+        df.strategy_instance = instance
     except (ModuleNotFoundError, AttributeError) as e:
         log_general.error(f"Strategy {strategy_name} not found: {e}")
         raise
@@ -79,32 +84,37 @@ def strategy(df: pd.DataFrame):
     return df
 
 
-def set_position(df, position):
+def set_position(df: pd.DataFrame, position: bool) -> pd.DataFrame:
+    """Set the position flag on the dataframe."""
     df["position"] = position
     return df
 
 
-def calc_entry_price(df):
+def calc_entry_price(df: pd.DataFrame) -> pd.DataFrame:
+    """Record the latest close as the entry price."""
     entry_price = df["close"].iat[-1]
     df["entry_price"] = entry_price
     return df
 
 
-def calc_stoploss(df):
-    sl = float(strategy_instance.stoploss)
+def calc_stoploss(df: pd.DataFrame) -> pd.DataFrame:
+    """Set a stop-loss level below the entry close."""
+    sl = float(df.strategy_instance.stoploss)
     df["stoploss"] = df["close"].iat[-1] * (1 - (sl / 100))
     return df
 
 
-def calc_takeprofit(df):
-    tp = float(strategy_instance.takeprofit)
+def calc_takeprofit(df: pd.DataFrame) -> pd.DataFrame:
+    """Set a take-profit level above the entry close."""
+    tp = float(df.strategy_instance.takeprofit)
     df["takeprofit"] = df["close"].iat[-1] * (1 + (tp / 100))
     return df
 
 
-def calc_trailing_stoploss(df):
-    tsl = float(strategy_instance.trailing_stoploss)
-    tslt = float(strategy_instance.trailing_stoploss_target)
+def calc_trailing_stoploss(df: pd.DataFrame) -> pd.DataFrame:
+    """Set a trailing stop that ratchets up after a target gain."""
+    tsl = float(df.strategy_instance.trailing_stoploss)
+    tslt = float(df.strategy_instance.trailing_stoploss_target)
 
     high_prices = df["high"]
     trailing_stop = []

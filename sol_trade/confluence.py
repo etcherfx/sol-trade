@@ -4,7 +4,6 @@ Adjusts position sizing based on whale signals, market regime,
 and sentiment circuit breaker state.
 """
 
-
 import pandas as pd
 
 from sol_trade.config import config
