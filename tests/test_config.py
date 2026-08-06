@@ -5,7 +5,7 @@ from sol_trade.config import config
 
 def test_config_defaults():
     c = config()
-    assert c.strategy == "default"
+    assert isinstance(c.strategy, str) and c.strategy
     assert c.data_exchange == "okx"
     assert c.sol_mint == "So11111111111111111111111111111111111111112"
     assert c.candles_path == "data/candles.db"

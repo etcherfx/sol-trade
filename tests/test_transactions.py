@@ -92,3 +92,64 @@ def test_sign_rejects_wallet_not_a_signer():
     )
     with pytest.raises(OrderError, match="not a required signer"):
         _sign_order_transaction(base64.b64encode(bytes(signed)).decode("utf-8"))
+
+
+def test_slippage_attempts_fixed_then_dynamic():
+    from sol_trade.transactions import _slippage_attempts
+
+    attempts = _slippage_attempts(50)
+    assert attempts[0] == {"slippageBps": 50}
+    assert attempts[1]["dynamicSlippage"] is True
+    assert attempts[1]["maxDynamicSlippageBps"] == 200
+
+
+def test_create_order_escalates_slippage_on_quote_failure(monkeypatch):
+    import asyncio
+
+    import httpx
+
+    from sol_trade import transactions
+
+    class _FakeResponse:
+        def __init__(self, status: int, text: str, payload=None):
+            self.status_code = status
+            self.text = text
+            self._payload = payload or {}
+
+        def json(self):
+            return self._payload
+
+    class _FakeClient:
+        def __init__(self, responses):
+            self.responses = responses
+            self.calls = []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, params, headers):
+            self.calls.append(dict(params))
+            return self.responses.pop(0)
+
+    client = _FakeClient(
+        [
+            _FakeResponse(400, '{"error":"Failed to get quotes"}'),
+            _FakeResponse(200, "ok", {"requestId": "r1", "outAmount": "5"}),
+        ]
+    )
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: client)
+    monkeypatch.setattr(config(), "decimals", lambda mint: 1e9)
+
+    result = asyncio.run(
+        transactions.create_order(
+            1.0,
+            "So11111111111111111111111111111111111111112",
+            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        )
+    )
+    assert result["requestId"] == "r1"
+    assert client.calls[0]["slippageBps"] == 50
+    assert client.calls[1]["dynamicSlippage"] is True

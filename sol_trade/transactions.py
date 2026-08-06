@@ -44,17 +44,31 @@ def _sign_order_transaction(transaction_b64: str) -> str:
     return base64.b64encode(bytes(signed_txn)).decode("utf-8")
 
 
+def _slippage_attempts(base_bps: int) -> list[dict[str, Any]]:
+    """Order attempts: fixed slippage first, dynamic-slippage as fallback.
+
+    JupiterZ RFQ can fail to quote certain sizes even at wide fixed slippage;
+    ``dynamicSlippage`` lets Jupiter pick an acceptable level (typically well
+    under the user's cap), bounded by ``maxDynamicSlippageBps``.
+    """
+    dynamic_cap = min(max(base_bps * 4, 100), 400)
+    return [
+        {"slippageBps": base_bps},
+        {"dynamicSlippage": True, "maxDynamicSlippageBps": dynamic_cap},
+    ]
+
+
 async def create_order(
     input_amount: float, input_token_mint: str, output_token_mint: str
 ) -> dict[str, Any]:
     """
     Creates a swap order using Jupiter Ultra API.
-    
+
     Args:
         input_amount: The amount of input token to swap (in token units, not lamports)
         input_token_mint: The mint address of the input token
         output_token_mint: The mint address of the output token
-    
+
     Returns:
         Dictionary containing the order response from Jupiter API
     """
@@ -67,12 +81,11 @@ async def create_order(
     # Convert token amount to smallest unit (lamports for SOL, etc.)
     amount_in_smallest_unit = int(input_amount * token_decimals)
     
-    params = {
+    base_params = {
         "inputMint": input_token_mint,
         "outputMint": output_token_mint,
         "amount": amount_in_smallest_unit,
         "taker": str(config().public_address),
-        "slippageBps": int(config().max_slippage or 50),
     }
     
     headers = {"Content-Type": "application/json"}
@@ -81,17 +94,26 @@ async def create_order(
     
     api_link = f"{config().jup_api}/order"
     log_transaction.info(f"SolTrade API Link: {api_link}")
-    log_transaction.info(f"Parameters: {params}")
     
     async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.get(api_link, params=params, headers=headers)
-        response.raise_for_status()
-        result = response.json()
-        log_transaction.info(
-            f"Order created (requestId: {result.get('requestId')}, "
-            f"outAmount: {result.get('outAmount')})"
-        )
-        return result
+        last_body = ""
+        for attempt in _slippage_attempts(int(config().max_slippage or 50)):
+            params = {**base_params, **attempt}
+            log_transaction.info(f"Parameters: {params}")
+            response = await client.get(api_link, params=params, headers=headers)
+            if response.status_code == 200:
+                result = response.json()
+                log_transaction.info(
+                    f"Order created (requestId: {result.get('requestId')}, "
+                    f"outAmount: {result.get('outAmount')})"
+                )
+                return result
+            last_body = response.text[:300]
+            log_transaction.warning(
+                f"order rejected (HTTP {response.status_code}, "
+                f"params {attempt}): {last_body}"
+            )
+        raise OrderError(f"Jupiter order failed: {last_body}")
 
 
 async def execute_order(order_response: dict) -> dict[str, Any]:

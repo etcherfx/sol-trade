@@ -14,6 +14,15 @@ from sol_trade.strategy import (
 from strategies.default_strategy import DefaultStrategy
 
 
+@pytest.fixture
+def default_strategy(monkeypatch):
+    """Force the default strategy so tests are independent of config.json."""
+    from sol_trade.config import config
+
+    monkeypatch.setattr(config(), "strategy", "default")
+    return config()
+
+
 def _ramp_df() -> pd.DataFrame:
     """80-bar gentle uptrend — RSI stays high but no TA exit triggers."""
     close = np.linspace(100.0, 110.0, 80)
@@ -22,12 +31,12 @@ def _ramp_df() -> pd.DataFrame:
     )
 
 
-def test_no_exit_without_risk_columns():
+def test_no_exit_without_risk_columns(default_strategy):
     out = DefaultStrategy(_ramp_df()).apply_strategy()
     assert pd.isna(out["exit"].iat[-1])
 
 
-def test_protective_exit_fires_with_risk_columns():
+def test_protective_exit_fires_with_risk_columns(default_strategy):
     merged = _ramp_df()
     merged["position"] = True
     merged["entry_price"] = 105.0
@@ -39,13 +48,13 @@ def test_protective_exit_fires_with_risk_columns():
     assert out["exit"].iat[-1] == 1
 
 
-def test_strategy_instance_is_per_dataframe():
+def test_strategy_instance_is_per_dataframe(default_strategy):
     s1 = strategy(_ramp_df())
     s2 = strategy(_ramp_df().assign(close=lambda d: d.close * 10))
     assert s1.strategy_instance is not s2.strategy_instance
 
 
-def test_risk_calculation_uses_own_instance():
+def test_risk_calculation_uses_own_instance(default_strategy):
     s = strategy(_ramp_df())
     s = calc_entry_price(s)
     s = calc_stoploss(s)
