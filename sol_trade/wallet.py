@@ -13,6 +13,38 @@ _SOL_RESERVE_FALLBACK = 0.02
 _SOL_RESERVE_TTL_SECONDS = 60
 _sol_reserve_cache: tuple[float, float] | None = None
 
+# SPL token program (TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA).
+_TOKEN_PROGRAM_ID = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+
+
+def get_all_token_holdings() -> dict[str, float]:
+    """All SPL token balances of the wallet plus native SOL, keyed by mint.
+
+    Returns ``{mint_address: balance_in_token_units}``; native SOL is included
+    under the configured ``sol_mint``.
+    """
+    holdings: dict[str, float] = {}
+    response = run_async(
+        config()
+        .client.get_token_accounts_by_owner_json_parsed(
+            config().public_address, TokenAccountOpts(program_id=_TOKEN_PROGRAM_ID)
+        )
+    ).to_json()
+    json_response = json.loads(response)
+    for account in json_response.get("result", {}).get("value", []):
+        parsed = account["account"]["data"]["parsed"]
+        info = parsed.get("info", {})
+        if info.get("isNative"):
+            continue  # wrapped SOL — native SOL is reported below
+        mint = info.get("mint")
+        ui_amount = info.get("tokenAmount", {}).get("uiAmount")
+        if mint and ui_amount is not None:
+            holdings[mint] = holdings.get(mint, 0.0) + float(ui_amount)
+
+    sol = run_async(config().client.get_balance(config().public_address)).value / 1e9
+    holdings[config().sol_mint] = holdings.get(config().sol_mint, 0.0) + sol
+    return holdings
+
 
 def minimum_sol_needed() -> float:
     """Smallest SOL reserve that guarantees swaps can settle.

@@ -32,6 +32,16 @@ SCREENS = ("dashboard", "logs", "help")
 
 
 @dataclass
+class Holding:
+    """One wallet token holding for the dashboard's full-account view."""
+
+    mint: str
+    symbol: str | None  # None when the mint isn't one of the configured tokens
+    balance: float
+    value: float | None  # None when no price is available
+
+
+@dataclass
 class TokenStatus:
     """Per-token metrics for one analysis cycle."""
 
@@ -60,6 +70,8 @@ class UIState:
     portfolio_value: float = 0.0
     total_profit: float = 0.0
     tokens: list[TokenStatus] = field(default_factory=list)
+    full_holdings: list[Holding] = field(default_factory=list)
+    total_account_value: float = 0.0
     countdown: int = 0
     last_refresh: str = "-"
     wallet_address: str = "-"
@@ -128,12 +140,22 @@ def _wallet_fragments(state: UIState) -> StyleAndTextTuples:
         ("Primary Balance", f"{state.primary_balance:,.4f} USDC", ""),
         ("Reserved for Fees (SOL)", f"{state.reserved_fees:.4f} SOL", ""),
         ("Portfolio Value", _money(state.portfolio_value), ""),
+        ("Total Account Value", _money(state.total_account_value), "bold"),
         ("Total Profit", _money(state.total_profit), profit_style),
         ("Wallet", state.wallet_address, "dim"),
     ]
     for label, value, style in rows:
         frags.append(("", f"  {label:<18} "))
         frags.append((style, f"{value}\n"))
+
+    if state.full_holdings:
+        frags.append(("", "\n"))
+        frags.append(("bold cyan", "  HOLDINGS\n"))
+        for holding in state.full_holdings:
+            symbol = holding.symbol or f"{holding.mint[:6]}…"
+            value = _money(holding.value) if holding.value is not None else "no price"
+            frags.append(("", f"  {symbol:<10} {holding.balance:>12.6f} "))
+            frags.append(("dim", f"{value:>12}\n"))
     return frags
 
 
