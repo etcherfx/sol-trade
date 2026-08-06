@@ -57,6 +57,12 @@ A hard fork of [noahtheprogrammer/soltrade](https://github.com/noahtheprogrammer
    uv run main.py
    ```
 
+   Paper trade first — swaps are simulated and the wallet is never touched:
+
+   ```bash
+   uv run main.py --dry-run
+   ```
+
 ## Configuration
 
 SolTrade reads its configuration from `config.json` and its credentials from the `.env` file, both in the project root. Copy `config.json.sample` to `config.json` and `.env.sample` to `.env` before the first run. Environment variables take precedence over `config.json`.

@@ -54,6 +54,7 @@ class UIState:
 
     lock: threading.Lock = field(default_factory=threading.Lock)
     running: bool = False
+    dry_run: bool = False
     primary_balance: float = 0.0
     reserved_fees: float = 0.02
     portfolio_value: float = 0.0
@@ -98,6 +99,7 @@ def _money(value: float) -> str:
 
 
 def header_fragments(state: UIState, screen_name: str) -> StyleAndTextTuples:
+    state = state.snapshot()
     status = "● RUNNING" if state.running else "● STOPPED"
     status_style = "bold green" if state.running else "bold red"
     clock = time.strftime("%H:%M:%S")
@@ -105,10 +107,14 @@ def header_fragments(state: UIState, screen_name: str) -> StyleAndTextTuples:
         ("reverse bold", "  SolTrade  "),
         ("", " "),
         (status_style, status),
-        ("", f"   [{screen_name}]"),
-        ("dim", f"   {clock}"),
-        ("", "\n"),
+        ("", " "),
     ]
+    if state.dry_run:
+        frags.append(("reverse bold yellow", " PAPER "))
+        frags.append(("", " "))
+    frags.append(("", f"[{screen_name}]"))
+    frags.append(("dim", f"   {clock}"))
+    frags.append(("", "\n"))
     return frags
 
 

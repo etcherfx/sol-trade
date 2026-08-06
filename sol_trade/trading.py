@@ -44,23 +44,94 @@ _http_session = requests.Session()
 
 
 class BalanceCache:
-    """Lazy balance fetcher that caches until explicitly invalidated."""
+    """Lazy balance fetcher; in dry-run mode it keeps a simulated paper ledger."""
 
     def __init__(self) -> None:
         self._cache: dict[str, float] = {}
+        self._paper_mode = False
+        self._paper: dict[str, float] = {}
+
+    def set_paper_mode(self, enabled: bool) -> None:
+        self._paper_mode = enabled
+        self._paper = {}
+
+    @property
+    def paper_mode(self) -> bool:
+        return self._paper_mode
 
     def get(self, mint: str) -> float:
+        if self._paper_mode:
+            if mint not in self._paper:
+                # Seed the paper ledger from the real wallet once.
+                self._paper[mint] = find_balance(mint) or 0.0
+            return self._paper[mint]
         if mint not in self._cache:
             # find_balance may return None on persistent rate limiting; treat
             # as zero so downstream arithmetic never sees None.
             self._cache[mint] = find_balance(mint) or 0.0
         return self._cache[mint]
 
+    def set(self, mint: str, value: float) -> None:
+        """Record a simulated balance change (dry-run fills)."""
+        if self._paper_mode:
+            self._paper[mint] = value
+        else:
+            self._cache[mint] = value
+
     def invalidate(self, mint: str) -> None:
-        self._cache.pop(mint, None)
+        if not self._paper_mode:
+            self._cache.pop(mint, None)
 
 
 _balance_cache = BalanceCache()
+
+_dry_run = False
+
+
+def _paper_buy(
+    input_amount: float,
+    df: pd.DataFrame,
+    primary_mint: str,
+    secondary_mint: str,
+    primary_mint_symbol: str,
+    secondary_mint_symbol: str,
+) -> bool:
+    """Simulate a buy at the latest close, updating the paper ledger."""
+    price = float(df["close"].iat[-1])
+    if price <= 0:
+        log_general.warning("paper buy skipped: no usable price")
+        return False
+    bought = input_amount / price
+    _balance_cache.set(secondary_mint, _balance_cache.get(secondary_mint) + bought)
+    _balance_cache.set(primary_mint, _balance_cache.get(primary_mint) - input_amount)
+    log_transaction.info(
+        f"PAPER BUY {bought:.4f} {secondary_mint_symbol} for "
+        f"{input_amount:.4f} {primary_mint_symbol} at {price:.6f}."
+    )
+    return True
+
+
+def _paper_sell(
+    input_amount: float,
+    df: pd.DataFrame,
+    primary_mint: str,
+    secondary_mint: str,
+    primary_mint_symbol: str,
+    secondary_mint_symbol: str,
+) -> bool:
+    """Simulate a sell at the latest close, updating the paper ledger."""
+    price = float(df["close"].iat[-1])
+    if price <= 0:
+        log_general.warning("paper sell skipped: no usable price")
+        return False
+    proceeds = input_amount * price
+    _balance_cache.set(primary_mint, _balance_cache.get(primary_mint) + proceeds)
+    _balance_cache.set(secondary_mint, 0.0)
+    log_transaction.info(
+        f"PAPER SELL {input_amount:.4f} {secondary_mint_symbol} for "
+        f"{proceeds:.4f} {primary_mint_symbol} at {price:.6f}."
+    )
+    return True
 
 
 def fetch_prices(mints: list[str]) -> dict[str, float]:
@@ -337,13 +408,24 @@ def handle_buy_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: str
         log_transaction.info(
             f"SolTrade has detected a buy signal for {mint_symbol} using {input_amount} {primary_mint_symbol}."
         )
-        is_swapped = asyncio.run(
-            perform_swap(
+        is_swapped = (
+            _paper_buy(
                 input_amount,
+                df,
                 primary_mint,
                 secondary_mint,
                 primary_mint_symbol,
                 secondary_mint_symbol,
+            )
+            if _dry_run
+            else asyncio.run(
+                perform_swap(
+                    input_amount,
+                    primary_mint,
+                    secondary_mint,
+                    primary_mint_symbol,
+                    secondary_mint_symbol,
+                )
             )
         )
         if is_swapped:
@@ -391,13 +473,24 @@ def handle_sell_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: st
         log_transaction.info(
             f"SolTrade has detected a sell signal for {input_amount} {mint_symbol}."
         )
-        is_swapped = asyncio.run(
-            perform_swap(
+        is_swapped = (
+            _paper_sell(
                 input_amount,
-                secondary_mint,
+                df,
                 primary_mint,
-                secondary_mint_symbol,
+                secondary_mint,
                 primary_mint_symbol,
+                secondary_mint_symbol,
+            )
+            if _dry_run
+            else asyncio.run(
+                perform_swap(
+                    input_amount,
+                    secondary_mint,
+                    primary_mint,
+                    secondary_mint_symbol,
+                    primary_mint_symbol,
+                )
             )
         )
         if is_swapped:
@@ -419,11 +512,22 @@ def handle_sell_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: st
     return False
 
 
-def start_trading(state: UIState) -> None:
-    """Run the trading loop in a background thread, feeding the UI state."""
-    global _stop_event, _trading_thread
+def start_trading(state: UIState, dry_run: bool = False) -> None:
+    """Run the trading loop in a background thread, feeding the UI state.
 
+    With ``dry_run=True`` swaps are simulated against the latest close and the
+    real wallet is never touched.
+    """
+    global _stop_event, _trading_thread, _dry_run
+
+    _dry_run = dry_run
+    _balance_cache.set_paper_mode(dry_run)
+    state.update(lambda s: setattr(s, "dry_run", dry_run))
     _stop_event = threading.Event()
+    if dry_run:
+        log_general.warning(
+            "PAPER TRADING: swaps are simulated, the wallet is not touched."
+        )
     log_general.info("SolTrade has now initialized the trading algorithm.")
     _capture_baseline()
 
