@@ -67,7 +67,7 @@ A hard fork of [noahtheprogrammer/soltrade](https://github.com/noahtheprogrammer
 
 SolTrade reads its configuration from `config.json` and its credentials from the `.env` file, both in the project root. Copy `config.json.sample` to `config.json` and `.env.sample` to `.env` before the first run. Environment variables take precedence over `config.json`.
 
-Config is **hot-reloaded**: edits to `config.json` are picked up automatically on the next trading cycle (≤ 1 minute) — strategy, feature toggles, slippage, whale wallets, and polling intervals all apply live. Structural settings (tokens, RPC, exchange) and `.env` credentials still require a restart.
+Config is **hot-reloaded**: edits to `config.json` are picked up automatically on the next trading cycle (≤ 1 minute) — strategy, feature toggles, slippage, whale wallets, polling intervals, and the traded tokens all apply live. Structural settings (the primary token you pay with, RPC, exchange) and `.env` credentials still require a restart. Removing a token that currently has an open position is refused until that position is closed.
 
 ### Credentials
 
@@ -90,6 +90,8 @@ Secrets live in the git-ignored `.env` file:
 | `price_update_seconds` | How often token prices refresh | `60` |
 | `max_slippage` | Maximum accepted slippage in BPS (100 BPS = 1%) | `50` |
 | `strategy` | The strategy to trade with | `default` |
+| `secondary_weights` | Portfolio weight per token (parallel to `secondary_mints`); empty = equal split | `[]` |
+| `token_strategies` | Per-token strategy overrides, e.g. `{"SOL": "default", "JUP": "momentum"}` | `{}` |
 | `data_exchange` | Exchange used for candlestick data (via ccxt) | `okx` |
 | `candles_path` | Local SQLite store for candlestick history | `data/candles.db` |
 
@@ -109,6 +111,36 @@ Secrets live in the git-ignored `.env` file:
 | `whale_data_path` | Where whale snapshots are stored | `data/whale_data.json` |
 | `regime_data_path` | Where market regime data is stored | `data/regime_data.json` |
 | `sentiment_data_path` | Where sentiment data is stored | `data/sentiment_data.json` |
+
+## Multi-token portfolios
+
+Trade several tokens with per-token allocation and strategies. Tokens are **hot-reloadable** — add or remove them in `config.json` and the change applies on the next cycle, no restart.
+
+### Portfolio weights
+
+`secondary_weights` is a list parallel to `secondary_mints` — each entry is that token's share of total capital (cash plus all open positions). Weights are normalized to sum to 1 on load; an empty list means an equal split. A weight of `0` makes a token **watch-only** — it is analyzed but never bought.
+
+```json
+"secondary_mints": ["So1111...2", "JUPyiwr...gBz"],
+"secondary_mint_symbols": ["SOL", "JUP"],
+"secondary_weights": [0.6, 0.4]
+```
+
+A buy deploys at most `weight × total_capital`, so each token gets its slice instead of the first signal taking everything.
+
+### Per-token strategies
+
+`token_strategies` assigns a different strategy per token; tokens not listed use the global `strategy`.
+
+```json
+"token_strategies": { "SOL": "default", "JUP": "momentum" }
+```
+
+### Changing tokens while running
+
+- **Adding** a token is always safe — it starts fresh (new position CSV, no history).
+- **Removing** a token with an **open position is refused**: the change is rolled back and an error is logged, because a removed token stops being managed (no stop-loss, take-profit, or trailing stop). Close the position first.
+- When the token set changes, the P&L baseline is recaptured automatically so profit figures stay correct.
 
 ## How it works
 
@@ -238,7 +270,6 @@ Indicators (`ema`, `sma`, `rsi`) are available from `sol_trade.strategy` — pur
 # strategies/momentum_strategy.py
 import pandas as pd
 
-from sol_trade.config import config
 from sol_trade.strategy import ema, rsi
 from .base_strategy import BaseStrategy
 
@@ -252,19 +283,21 @@ class MomentumStrategy(BaseStrategy):
         self.trailing_stoploss_target = 5
 
     def apply_strategy(self):
-        if config().strategy == "momentum":
-            self.df["ema_fast"] = ema(self.df["close"], 8)
-            self.df["ema_slow"] = ema(self.df["close"], 21)
-            self.df["rsi"] = rsi(self.df["close"], 14)
+        self.df["ema_fast"] = ema(self.df["close"], 8)
+        self.df["ema_slow"] = ema(self.df["close"], 21)
+        self.df["rsi"] = rsi(self.df["close"], 14)
 
-            entry = (self.df["ema_fast"] > self.df["ema_slow"]) & (self.df["rsi"] <= 40)
-            exit_ = (self.df["ema_fast"] < self.df["ema_slow"]) | (self.df["rsi"] >= 70)
+        entry = (self.df["ema_fast"] > self.df["ema_slow"]) & (self.df["rsi"] <= 40)
+        exit_ = (self.df["ema_fast"] < self.df["ema_slow"]) | (self.df["rsi"] >= 70)
 
-            self.df.loc[entry, "entry"] = 1
-            self.df.loc[exit_, "exit"] = 1
+        self.df.loc[entry, "entry"] = 1
+        self.df.loc[exit_, "exit"] = 1
 
         return self.df
 ```
+
+> [!IMPORTANT]
+> The loader already picks the class for the configured strategy name, so `apply_strategy` must **not** be gated on `config().strategy` — a guard like `if config().strategy == "momentum"` silently no-ops when the strategy is assigned per-token via `token_strategies`.
 
 </details>
 

@@ -5,6 +5,8 @@
   "primary_mint_symbol": "USDC",
   "secondary_mints": ["So11111111111111111111111111111111111111112"],
   "secondary_mint_symbols": ["SOL"],
+  "secondary_weights": [],
+  "token_strategies": {},
   "price_update_seconds": 60,
   "max_slippage": 50,
   "strategy": "default",
