@@ -9,6 +9,7 @@ from sol_trade.strategy import (
     calc_stoploss,
     calc_takeprofit,
     calc_trailing_stoploss,
+    load_strategy_class,
     resolve_strategy_name,
     strategy,
 )
@@ -76,6 +77,20 @@ def test_resolve_strategy_name_per_token_override(default_strategy):
         assert resolve_strategy_name(None) == "default"
     finally:
         config().token_strategies = {}
+
+
+def test_load_strategy_class_snake_case_name(default_strategy):
+    # "jup_trend" must map to JupTrendStrategy, not the legacy Jup_trendStrategy.
+    cls = load_strategy_class("jup_trend")
+    assert cls.__name__ == "JupTrendStrategy"
+
+
+def test_load_strategy_class_unknown_raises(default_strategy):
+    import pytest
+
+    # Missing module -> ModuleNotFoundError; missing class -> AttributeError.
+    with pytest.raises((ModuleNotFoundError, AttributeError)):
+        load_strategy_class("does_not_exist")
 
 
 def test_trailing_stoploss_carries_peak_across_windows(default_strategy):

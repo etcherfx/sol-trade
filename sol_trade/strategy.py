@@ -58,10 +58,22 @@ def rsi(close: pd.Series, period: int = 14) -> pd.Series:
 
 
 def load_strategy_class(strategy_name: str) -> type:
-    """Load the strategy class for ``strategies/{name}_strategy.py``."""
+    """Load the strategy class for ``strategies/{name}_strategy.py``.
+
+    The class is expected as ``{PascalCase}Strategy`` — ``jup_trend`` maps to
+    ``JupTrendStrategy``. A fallback to the legacy single-word capitalization
+    (``Jup_trendStrategy``) is tried for names that predate the convention.
+    """
     strategy_module = importlib.import_module(f"strategies.{strategy_name}_strategy")
-    strategy_class = getattr(strategy_module, f"{strategy_name.capitalize()}Strategy")
-    return strategy_class
+    pascal = "".join(part.capitalize() for part in strategy_name.split("_"))
+    candidates = (f"{pascal}Strategy", f"{strategy_name.capitalize()}Strategy")
+    for candidate in candidates:
+        if hasattr(strategy_module, candidate):
+            return getattr(strategy_module, candidate)
+    raise AttributeError(
+        f"module 'strategies.{strategy_name}_strategy' has no class "
+        f"named {candidates[0]}"
+    )
 
 
 def resolve_strategy_name(symbol: str | None = None) -> str:
