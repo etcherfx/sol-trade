@@ -144,7 +144,8 @@ def fetch_prices(mints: list[str]) -> dict[str, float]:
     except requests.exceptions.HTTPError as e:
         if e.response is not None and e.response.status_code == 401:
             log_general.error(
-                "401 Unauthorized: Endpoint requires Pro plan, falling back to lite-api"
+                "401 Unauthorized fetching prices from the lite API; "
+                "check the Jupiter API key and plan"
             )
         else:
             log_general.error(f"HTTP error fetching prices for {unique_mints}: {e}")
