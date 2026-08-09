@@ -51,6 +51,9 @@ class Config:
         self.secondary_weights: list[float] = []
         # Per-token strategy overrides, keyed by symbol; missing -> global strategy.
         self.token_strategies: dict[str, str] = {}
+        # Per-token candle-data exchange overrides, keyed by symbol; missing ->
+        # the global data_exchange.
+        self.token_exchanges: dict[str, str] = {}
         self.price_update_seconds: int = 60
         self.max_slippage: int = 50
         self.strategy: str = "default"
@@ -96,6 +99,7 @@ class Config:
             "secondary_mint_symbols": ["SOL"],
             "secondary_weights": [],
             "token_strategies": {},
+            "token_exchanges": {},
             "price_update_seconds": 60,
             "max_slippage": 50,
             "strategy": "default",
@@ -150,6 +154,8 @@ class Config:
 
         if not isinstance(self.token_strategies, dict):
             self.token_strategies = {}
+        if not isinstance(self.token_exchanges, dict):
+            self.token_exchanges = {}
 
         self._config_mtime = _file_mtime(self.path)
 
@@ -183,6 +189,7 @@ class Config:
                 "secondary_mint_symbols",
                 "secondary_weights",
                 "token_strategies",
+                "token_exchanges",
             )
         }
         self._apply_config_file()
@@ -226,6 +233,14 @@ class Config:
         if unknown_strategies:
             log_general.warning(
                 f"token_strategies references unknown token(s): {unknown_strategies}"
+            )
+        unknown_exchanges = [
+            symbol for symbol in self.token_exchanges
+            if symbol not in self.secondary_mint_symbols
+        ]
+        if unknown_exchanges:
+            log_general.warning(
+                f"token_exchanges references unknown token(s): {unknown_exchanges}"
             )
 
         if not self.private_key or self.private_key == "":

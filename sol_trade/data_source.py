@@ -16,7 +16,7 @@ import ccxt
 from sol_trade.config import config
 from sol_trade.log import log_general
 
-_exchange: Any | None = None
+_exchanges: dict[str, Any] = {}
 
 # Candle period lengths in seconds, used for staleness checks.
 _PERIOD_SECONDS = {"1m": 60, "1d": 86400}
@@ -37,16 +37,22 @@ def _candle_dict(
     }
 
 
-def get_exchange() -> Any:
-    """Return the configured ccxt exchange client (lazily created)."""
-    global _exchange
-    if _exchange is None:
-        exchange_id = config().data_exchange
+def get_exchange(exchange_id: str | None = None) -> Any:
+    """Return a lazily-created ccxt exchange client, cached per exchange id.
+
+    ``exchange_id`` defaults to the global ``data_exchange``; per-token
+    overrides pass their own id so different tokens can use different
+    exchanges in the same run.
+    """
+    exchange_id = exchange_id or config().data_exchange
+    if exchange_id not in _exchanges:
         exchange_class = getattr(ccxt, exchange_id, None)
         if exchange_class is None:
             raise ValueError(f"Unknown ccxt exchange: {exchange_id}")
-        _exchange = exchange_class({"enableRateLimit": True, "timeout": 15000})
-    return _exchange
+        _exchanges[exchange_id] = exchange_class(
+            {"enableRateLimit": True, "timeout": 15000}
+        )
+    return _exchanges[exchange_id]
 
 
 def _connect() -> sqlite3.Connection:
@@ -134,7 +140,11 @@ def _load_candles(symbol: str, timeframe: str, limit: int) -> list[dict]:
 
 
 def fetch_candles(
-    base: str, quote: str, timeframe: str = "1m", limit: int = 50
+    base: str,
+    quote: str,
+    timeframe: str = "1m",
+    limit: int = 50,
+    exchange_id: str | None = None,
 ) -> list[dict]:
     """Fetch candles as ``{open, high, low, close, volume, totalvolume, time}``.
 
@@ -145,7 +155,7 @@ def fetch_candles(
     """
     symbol = f"{base}/{quote}"
     try:
-        exchange = get_exchange()
+        exchange = get_exchange(exchange_id)
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
         candles = [
             _candle_dict(ts // 1000, open_, high, low, close, volume)

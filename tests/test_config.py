@@ -63,6 +63,27 @@ def test_reload_picks_up_changes_but_pins_structural(tmp_path, monkeypatch):
         c.__dict__.update(snapshot)
 
 
+def test_reload_token_exchanges(tmp_path, monkeypatch):
+    import json
+
+    from sol_trade.config import _file_mtime, config
+
+    c = config()
+    snapshot = dict(c.__dict__)
+    try:
+        path = tmp_path / "config.json"
+        path.write_text(json.dumps({"token_exchanges": {"SOL": "mexc"}}))
+        monkeypatch.setattr(c, "path", str(path))
+        c._config_mtime = 0.0
+
+        c.maybe_reload_config()
+
+        assert c.token_exchanges == {"SOL": "mexc"}  # lightweight -> reloaded
+    finally:
+        c.__dict__.clear()
+        c.__dict__.update(snapshot)
+
+
 def test_reload_normalizes_weights(tmp_path, monkeypatch):
     import json
 

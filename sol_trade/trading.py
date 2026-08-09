@@ -290,7 +290,11 @@ def perform_analysis(state: UIState) -> None:
     ):
         try:
             candles = data_source.fetch_candles(
-                secondary_mint_symbol, cfg.primary_mint_symbol, "1m", 50
+                secondary_mint_symbol,
+                cfg.primary_mint_symbol,
+                "1m",
+                50,
+                exchange_id=cfg.token_exchanges.get(secondary_mint_symbol),
             )
             new_df = _candles_to_frame(candles)
             if new_df.empty:

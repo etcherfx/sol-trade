@@ -7,6 +7,7 @@
   "secondary_mint_symbols": ["SOL"],
   "secondary_weights": [],
   "token_strategies": {},
+  "token_exchanges": {},
   "price_update_seconds": 60,
   "max_slippage": 50,
   "strategy": "default",

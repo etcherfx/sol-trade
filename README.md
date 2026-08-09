@@ -92,6 +92,7 @@ Secrets live in the git-ignored `.env` file:
 | `strategy` | The strategy to trade with | `default` |
 | `secondary_weights` | Portfolio weight per token (parallel to `secondary_mints`); empty = equal split | `[]` |
 | `token_strategies` | Per-token strategy overrides, e.g. `{"SOL": "default", "JUP": "momentum"}` | `{}` |
+| `token_exchanges` | Per-token candle-data exchange overrides, e.g. `{"POPCAT": "mexc"}`; missing = `data_exchange` | `{}` |
 | `data_exchange` | Exchange used for candlestick data (via ccxt) | `okx` |
 | `candles_path` | Local SQLite store for candlestick history | `data/candles.db` |
 
@@ -135,6 +136,17 @@ A buy deploys at most `weight × total_capital`, so each token gets its slice in
 ```json
 "token_strategies": { "SOL": "default", "JUP": "momentum" }
 ```
+
+### Per-token exchanges
+
+`token_exchanges` assigns a different candle-data exchange per token (any [ccxt](https://github.com/ccxt/ccxt) exchange id); tokens not listed use the global `data_exchange`. Use it when one exchange doesn't list all your tokens — e.g. POPCAT is missing on OKX but available on MEXC:
+
+```json
+"data_exchange": "okx",
+"token_exchanges": { "POPCAT": "mexc" }
+```
+
+Both settings hot-reload, but `data_exchange` itself is structural — changing it still requires a restart. Each exchange client is created once and reused; candle history is keyed by symbol, so switching a token's exchange starts fresh data for it.
 
 ### Changing tokens while running
 
