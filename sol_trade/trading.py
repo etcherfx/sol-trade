@@ -259,6 +259,20 @@ def _as_float(value: Any) -> float:
     return _as_float_or_none(value) or 0.0
 
 
+# Canonical analysis-frame columns. Strategies may use volume for
+# confirmation (e.g. volume-SMA filters), so it must reach the dataframe.
+_CANDLE_COLUMNS = ["close", "high", "low", "open", "volume", "totalvolume", "time"]
+
+
+def _candles_to_frame(candles: list[dict]) -> pd.DataFrame:
+    """Build the analysis dataframe from candle dicts (OHLCV + time)."""
+    df = pd.DataFrame(candles)
+    for col in _CANDLE_COLUMNS:
+        if col not in df.columns:
+            df[col] = pd.NA
+    return df[_CANDLE_COLUMNS]
+
+
 def perform_analysis(state: UIState) -> None:
     cfg = config()
     data_frames: list[pd.DataFrame] = []
@@ -278,9 +292,7 @@ def perform_analysis(state: UIState) -> None:
             candles = data_source.fetch_candles(
                 secondary_mint_symbol, cfg.primary_mint_symbol, "1m", 50
             )
-            new_df = pd.DataFrame(
-                candles, columns=["close", "high", "low", "open", "time"]
-            )
+            new_df = _candles_to_frame(candles)
             if new_df.empty:
                 log_general.warning(
                     f"no candle data for {secondary_mint_symbol}; skipping this cycle"

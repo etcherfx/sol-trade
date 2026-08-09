@@ -14,6 +14,26 @@ def _reset_dry_run() -> None:
     trading._current_total_capital = 0.0
 
 
+def test_candles_to_frame_includes_volume():
+    candles = [
+        {
+            "close": 1.0,
+            "high": 1.1,
+            "low": 0.9,
+            "open": 1.0,
+            "volume": 100.0,
+            "totalvolume": 200.0,
+            "time": 1,
+        }
+    ]
+    df = trading._candles_to_frame(candles)
+    assert list(df.columns) == [
+        "close", "high", "low", "open", "volume", "totalvolume", "time",
+    ]
+    assert float(df["volume"].iat[0]) == pytest.approx(100.0)
+    assert float(df["totalvolume"].iat[0]) == pytest.approx(200.0)
+
+
 def test_paper_buy_updates_ledger():
     _reset_dry_run()
     trading._balance_cache.set_paper_mode(True)
@@ -214,6 +234,8 @@ def test_buy_records_fill_price_and_position_size(tmp_path, monkeypatch):
     trading._balance_cache.set(config().primary_mint, 100.0)
     trading._balance_cache.set(config().secondary_mints[0], 0.0)
     monkeypatch.setattr(config(), "confluence_enabled", False)
+    monkeypatch.setattr(config(), "secondary_mint_symbols", ["SOL"])
+    monkeypatch.setattr(config(), "secondary_weights", [])
     df = _trading_df(entry=1)
 
     ok = trading.handle_buy_signal(df, config().secondary_mints[0], str(tmp_path / "sol.csv"), "SOL")
