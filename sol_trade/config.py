@@ -181,7 +181,12 @@ class Config:
             log_general.error("Jupiter API endpoint is not set in config.json.")
 
     def decimals(self, mint_address: str) -> int:
-        """Get token decimals with caching to avoid repeated RPC calls."""
+        """Return the smallest-unit multiplier for a mint, cached.
+
+        Despite the name this is ``10 ** decimals`` (e.g. 1_000_000_000 for a
+        9-decimal token), the value callers multiply token amounts by to get
+        lamports/smallest units — not the decimals count itself.
+        """
         if mint_address in self._decimals_cache:
             return self._decimals_cache[mint_address]
         
