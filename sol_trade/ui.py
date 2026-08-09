@@ -107,6 +107,17 @@ def _money(value: float) -> str:
     return f"${value:,.2f}"
 
 
+def _token_price(value: float) -> str:
+    """Format a token price/level with enough decimals to stay meaningful.
+
+    Micro-cap tokens (e.g. BONK at $0.0000024) round to 0.0000 at the default
+    four decimals, so sub-mill values get eight instead.
+    """
+    if value and value < 0.001:
+        return f"{value:.8f}"
+    return f"{value:.4f}"
+
+
 # ---------------------------------------------------------------- dashboard
 
 
@@ -196,8 +207,8 @@ def _market_fragments(state: UIState) -> StyleAndTextTuples:
         (
             "bold",
             (
-                f"  {'TOKEN':<7}{'PRICE':>9} {'RSI':>6} {'EMA-S':>8} {'EMA-M':>8} "
-                f"{'SIGNAL':>6} {'POS':>5} {'SL':>9} {'TP':>9}\n"
+                f"  {'TOKEN':<7}{'PRICE':>10} {'RSI':>6} {'EMA-S':>10} {'EMA-M':>10} "
+                f"{'SIGNAL':>6} {'POS':>5} {'SL':>10} {'TP':>10}\n"
             ),
         ),
     ]
@@ -215,20 +226,20 @@ def _market_fragments(state: UIState) -> StyleAndTextTuples:
         )
         pos = "IN" if t.position else "OUT"
         pos_style = "bold green" if t.position else "dim"
-        sl = f"{t.stoploss:.2f}" if t.stoploss is not None else "—"
-        tp = f"{t.takeprofit:.2f}" if t.takeprofit is not None else "—"
+        sl = _token_price(t.stoploss) if t.stoploss is not None else "—"
+        tp = _token_price(t.takeprofit) if t.takeprofit is not None else "—"
         frags.append(
             (
                 "",
                 (
-                    f"  {t.symbol:<7}{t.price:>9.4f} {t.rsi:>6.1f} "
-                    f"{t.ema_short:>8.4f} {t.ema_medium:>8.4f} "
+                    f"  {t.symbol:<7}{_token_price(t.price):>10} {t.rsi:>6.1f} "
+                    f"{_token_price(t.ema_short):>10} {_token_price(t.ema_medium):>10} "
                 ),
             )
         )
         frags.append((sig_style, f"{signal:>6}"))
         frags.append((pos_style, f" {pos:>5}"))
-        frags.append(("", f" {sl:>9} {tp:>9}\n"))
+        frags.append(("", f" {sl:>10} {tp:>10}\n"))
     return frags
 
 

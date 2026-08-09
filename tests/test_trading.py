@@ -34,6 +34,26 @@ def test_candles_to_frame_includes_volume():
     assert float(df["totalvolume"].iat[0]) == pytest.approx(200.0)
 
 
+def test_pick_indicator_resolves_strategy_column_names():
+    import pandas as pd
+
+    # Custom strategy names (jup_trend / jto_trend) — no ema_s/ema_m columns.
+    custom = pd.Series({"ema_fast": 1.5, "ema_slow": 2.0, "ema_mid": 1.8})
+    assert trading._pick_indicator(custom, "ema_s", "ema_fast") == 1.5
+    assert trading._pick_indicator(custom, "ema_m", "ema_mid", "ema_slow") == 1.8
+
+    # Default-strategy names win when present.
+    default = pd.Series({"ema_s": 3.0, "ema_fast": 1.5})
+    assert trading._pick_indicator(default, "ema_s", "ema_fast") == 3.0
+
+    # NaN in the preferred column falls through to the next candidate.
+    nan_first = pd.Series({"ema_s": float("nan"), "ema_fast": 1.5})
+    assert trading._pick_indicator(nan_first, "ema_s", "ema_fast") == 1.5
+
+    # Nothing present -> 0.0 (dashboard shows a dash-like zero, not a crash).
+    assert trading._pick_indicator(pd.Series({"rsi": 10.0}), "ema_s", "ema_fast") == 0.0
+
+
 def test_paper_buy_updates_ledger():
     _reset_dry_run()
     trading._balance_cache.set_paper_mode(True)

@@ -259,6 +259,20 @@ def _as_float(value: Any) -> float:
     return _as_float_or_none(value) or 0.0
 
 
+def _pick_indicator(last: pd.Series, *names: str) -> float:
+    """First non-null value among candidate columns, else 0.0.
+
+    Strategies name their indicators differently (default: ``ema_s``/``ema_m``,
+    custom: ``ema_fast``/``ema_mid``/``ema_slow``), so the dashboard resolves
+    them in order instead of hardcoding one strategy's column names.
+    """
+    for name in names:
+        value = last.get(name)
+        if value is not None and not pd.isna(value):
+            return float(value)
+    return 0.0
+
+
 # Canonical analysis-frame columns. Strategies may use volume for
 # confirmation (e.g. volume-SMA filters), so it must reach the dataframe.
 _CANDLE_COLUMNS = ["close", "high", "low", "open", "volume", "totalvolume", "time"]
@@ -418,8 +432,8 @@ def perform_analysis(state: UIState) -> None:
                 symbol=symbol,
                 price=_as_float(last.get("close")),
                 rsi=_as_float(last.get("rsi")),
-                ema_short=_as_float(last.get("ema_s")),
-                ema_medium=_as_float(last.get("ema_m")),
+                ema_short=_pick_indicator(last, "ema_s", "ema_fast"),
+                ema_medium=_pick_indicator(last, "ema_m", "ema_mid", "ema_slow"),
                 entry_signal=last.get("entry") == 1,
                 exit_signal=last.get("exit") == 1,
                 position=bool(last.get("position")),

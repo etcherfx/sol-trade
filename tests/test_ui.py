@@ -1,6 +1,6 @@
 """Tests for the UI shared state."""
 
-from sol_trade.ui import TokenStatus, UIState
+from sol_trade.ui import TokenStatus, UIState, _token_price
 
 
 def test_update_holds_lock_and_snapshot_copies():
@@ -20,3 +20,10 @@ def test_tokens_replaced_atomically():
     state.update(lambda s: setattr(s, "tokens", [TokenStatus(symbol="SOL")]))
     snap = state.snapshot()
     assert [t.symbol for t in snap.tokens] == ["SOL"]
+
+
+def test_token_price_micro_cap_keeps_significant_decimals():
+    # BONK-class tokens: 4 decimals would round $0.0000024 to 0.0000.
+    assert _token_price(0.0000024) == "0.00000240"
+    assert _token_price(76.32) == "76.3200"
+    assert _token_price(0.0) == "0.0000"
