@@ -12,11 +12,12 @@ from sol_trade.log import log_general
 from sol_trade.utils import run_async
 
 # Keys that are NOT hot-reloaded — changing them requires a restart.
+# Secondary tokens ARE hot-reloaded (guarded by the trading loop against
+# orphaning open positions); primary mint stays structural because candle
+# symbols and P&L baselines are quoted in it.
 _STRUCTURAL_KEYS = (
     "primary_mint",
     "primary_mint_symbol",
-    "secondary_mints",
-    "secondary_mint_symbols",
     "sol_mint",
     "rpc_https",
     "jup_api",
@@ -45,6 +46,11 @@ class Config:
         self.sol_mint: str = "So11111111111111111111111111111111111111112"
         self.secondary_mints: list[str] = []
         self.secondary_mint_symbols: list[str] = []
+        # Portfolio weights per secondary token (parallel to secondary_mints);
+        # empty list means equal split. Normalized to sum to 1 on load.
+        self.secondary_weights: list[float] = []
+        # Per-token strategy overrides, keyed by symbol; missing -> global strategy.
+        self.token_strategies: dict[str, str] = {}
         self.price_update_seconds: int = 60
         self.max_slippage: int = 50
         self.strategy: str = "default"
@@ -88,6 +94,8 @@ class Config:
             "primary_mint_symbol": "USDC",
             "secondary_mints": ["So11111111111111111111111111111111111111112"],
             "secondary_mint_symbols": ["SOL"],
+            "secondary_weights": [],
+            "token_strategies": {},
             "price_update_seconds": 60,
             "max_slippage": 50,
             "strategy": "default",
@@ -127,6 +135,22 @@ class Config:
                 value = fallback
             setattr(self, key, value)
 
+        # Normalize portfolio weights to sum to 1 (empty list = equal split).
+        weights = self.secondary_weights
+        if isinstance(weights, list):
+            try:
+                weights = [float(w) for w in weights]
+            except (TypeError, ValueError):
+                weights = []
+            total = sum(weights)
+            weights = [w / total for w in weights] if total > 0 else []
+        else:
+            weights = []
+        self.secondary_weights = weights
+
+        if not isinstance(self.token_strategies, dict):
+            self.token_strategies = {}
+
         self._config_mtime = _file_mtime(self.path)
 
     def load_config(self) -> None:
@@ -148,13 +172,28 @@ class Config:
         """Re-read config.json for lightweight settings (hot-reload).
 
         Structural keys (tokens, RPC, exchange) and credentials are pinned —
-        changing those still requires a restart.
+        changing those still requires a restart. A malformed or invalid token
+        set keeps the previous configuration.
         """
         pinned = {key: getattr(self, key) for key in _STRUCTURAL_KEYS}
+        token_set = {
+            attr: getattr(self, attr)
+            for attr in (
+                "secondary_mints",
+                "secondary_mint_symbols",
+                "secondary_weights",
+                "token_strategies",
+            )
+        }
         self._apply_config_file()
         for key, value in pinned.items():
             setattr(self, key, value)
-        self._validate_config()
+        try:
+            self._validate_config()
+        except ValueError:
+            for key, value in token_set.items():
+                setattr(self, key, value)
+            raise
 
     def maybe_reload_config(self) -> None:
         """Reload config.json when it changed on disk (malformed edits are kept out)."""
@@ -168,6 +207,27 @@ class Config:
     
     def _validate_config(self) -> None:
         """Validate that critical configuration fields are properly set."""
+        # Token-set shape errors raise so a malformed hot-reload keeps the
+        # previous configuration (reload_config is wrapped in maybe_reload_config).
+        if not self.secondary_mints or not self.secondary_mint_symbols:
+            raise ValueError("secondary_mints and secondary_mint_symbols must not be empty")
+        if len(self.secondary_mints) != len(self.secondary_mint_symbols):
+            raise ValueError(
+                "secondary_mints and secondary_mint_symbols must have equal length"
+            )
+        if self.secondary_weights and len(self.secondary_weights) != len(self.secondary_mint_symbols):
+            raise ValueError(
+                "secondary_weights must be empty or match the number of secondary tokens"
+            )
+        unknown_strategies = [
+            symbol for symbol in self.token_strategies
+            if symbol not in self.secondary_mint_symbols
+        ]
+        if unknown_strategies:
+            log_general.warning(
+                f"token_strategies references unknown token(s): {unknown_strategies}"
+            )
+
         if not self.private_key or self.private_key == "":
             log_general.warning("Private key is not set in .env or config.json. Bot cannot trade.")
         
