@@ -163,6 +163,55 @@ def test_partial_sell_keeps_position(tmp_path, monkeypatch):
     _reset_dry_run()
 
 
+def test_trailing_stop_fires_immediately_on_fresh_breach(tmp_path, monkeypatch):
+    _reset_dry_run()
+    trading._dry_run = True
+    trading._balance_cache.set_paper_mode(True)
+    trading._balance_cache.set(config().primary_mint, 0.0)
+    trading._balance_cache.set(config().secondary_mints[0], 2.0)
+    monkeypatch.setattr(config(), "confluence_enabled", False)
+    monkeypatch.setattr(config(), "sentiment_enabled", False)
+    # Position entered at 1.00 with a 1.20 carried peak, so the ratcheted stop
+    # is 1.20 * 0.98 = 1.176. The last close (1.17) sits below the fresh stop
+    # but above the 1.00 stop carried from the previous cycle — the strategy
+    # layer never set exit, so handle_sell_signal must.
+    close = pd.Series([1.02, 1.05, 1.10, 1.17])
+    df = pd.DataFrame(
+        {
+            "open": close,
+            "close": close,
+            "high": close + 0.02,
+            "low": close - 0.02,
+            "symbol": "SOL",
+            "entry": 0,
+            "exit": 0,
+            "position": True,
+            "position_size": 2.0,
+            "entry_price": 1.00,
+            "stoploss": 0.90,
+            "takeprofit": 1.30,
+            "trailing_stoploss": 1.00,  # carried constant from last cycle
+            "trailing_stoploss_target": 1.05,
+            "highest_price": 1.20,  # carried peak -> ratchet lifts the stop
+        }
+    )
+    df = trading.strategy(df)  # attaches strategy_instance with risk parameters
+    csv_path = tmp_path / "sol.csv"
+
+    ok = trading.handle_sell_signal(
+        df, config().secondary_mints[0], str(csv_path), "SOL"
+    )
+
+    assert ok
+    saved = pd.read_csv(csv_path)
+    assert bool(saved["position"].iat[-1]) is False  # full close
+    # The paper ledger received the proceeds of the full 2.0 position.
+    assert trading._balance_cache.get(config().primary_mint) == pytest.approx(
+        2.0 * 1.17
+    )
+    _reset_dry_run()
+
+
 def test_full_close_clears_position_and_columns(tmp_path, monkeypatch):
     _reset_dry_run()
     trading._dry_run = True

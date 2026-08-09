@@ -514,6 +514,13 @@ def handle_sell_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: st
     input_amount = _balance_cache.get(secondary_mint)
     df = calc_trailing_stoploss(df)
 
+    # The strategy layer evaluated exits against the trailing stop carried from
+    # the previous cycle, but the ratchet may have lifted the stop above price
+    # since. Re-evaluate so a fresh breach exits immediately instead of lagging
+    # a cycle. Pre-tracking bars are None -> NaN and never match.
+    trailing_stop = pd.to_numeric(df["trailing_stoploss"], errors="coerce")
+    df.loc[df["close"] <= trailing_stop, "exit"] = 1
+
     if df["exit"].iat[-1] == 1:
         mint_symbol = cast(str, df["symbol"].iat[0])
 
