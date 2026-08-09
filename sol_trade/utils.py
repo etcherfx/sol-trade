@@ -63,7 +63,12 @@ def handle_rate_limiting(
                 try:
                     return client_function(*args, **kwargs)
                 except SolanaRpcException as e:
-                    if 'HTTPStatusError' in e.error_msg:
+                    if (
+                        "HTTPStatusError" in e.error_msg
+                        or "429" in e.error_msg
+                        or "rate limit" in e.error_msg.lower()
+                        or "too many requests" in e.error_msg.lower()
+                    ):
                         log_general.warning(
                             f"Rate limit exceeded in {client_function.__name__}, retrying in {retry_delay} seconds...")
                         time.sleep(retry_delay)
