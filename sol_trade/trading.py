@@ -23,17 +23,6 @@ from sol_trade.transactions import perform_swap
 from sol_trade.ui import Holding, TokenStatus, UIState
 from sol_trade.wallet import find_balance, get_all_token_holdings, minimum_sol_needed
 
-config_instance = config()
-primary_mint: str = config_instance.primary_mint
-primary_mint_symbol: str = config_instance.primary_mint_symbol
-secondary_mints: list[str] = config_instance.secondary_mints
-secondary_mint_symbols: list[str] = config_instance.secondary_mint_symbols
-
-if not primary_mint or not primary_mint_symbol:
-    raise ValueError("Primary mint configuration is missing.")
-if not secondary_mints or not secondary_mint_symbols:
-    raise ValueError("At least one secondary mint must be configured.")
-
 _http_session = requests.Session()
 
 
@@ -80,6 +69,62 @@ class BalanceCache:
 _balance_cache = BalanceCache()
 
 _dry_run = False
+
+# Total capital (primary balance + all tracked positions), recomputed every
+# analysis cycle. Used for weighted buy budgeting.
+_current_total_capital: float = 0.0
+# Token set the P&L baseline was captured against; recaptures on change.
+_baseline_key: tuple[Any, ...] = ()
+
+# Hot-reloadable attributes that together define the traded token set.
+_TOKEN_SET_ATTRS = ("secondary_mints", "secondary_mint_symbols", "secondary_weights")
+
+
+def _token_weight(token_symbol: str) -> float:
+    """Portfolio weight for a token; equal split when weights are unset."""
+    symbols = config().secondary_mint_symbols
+    weights = config().secondary_weights
+    if weights:
+        if token_symbol in symbols:
+            return float(weights[symbols.index(token_symbol)])
+        return 0.0
+    return 1.0 / max(len(symbols), 1)
+
+
+def _token_set_snapshot() -> dict[str, Any]:
+    """Snapshot the hot-reloadable token-set attributes."""
+    cfg = config()
+    return {attr: getattr(cfg, attr) for attr in _TOKEN_SET_ATTRS}
+
+
+def _has_open_position(token_symbol: str) -> bool:
+    """True when the persisted position CSV for a token has an open position."""
+    try:
+        df = read_dataframe_from_csv(f"data/{token_symbol}_data.csv")
+        return len(df) > 0 and bool(df["position"].iat[-1])
+    except (FileNotFoundError, KeyError, IndexError):
+        return False
+
+
+def _enforce_token_change_guard(prev: dict[str, Any]) -> None:
+    """Reject a token-set change that would orphan an open position.
+
+    Removed tokens stop being managed (SL/TP/trailing stops stop evaluating),
+    so a removal while a position is open is rolled back with an error.
+    """
+    cfg = config()
+    removed = [
+        symbol
+        for symbol in prev["secondary_mint_symbols"]
+        if symbol not in cfg.secondary_mint_symbols and _has_open_position(symbol)
+    ]
+    if removed:
+        log_general.error(
+            f"token change rejected: open position in {removed}; "
+            "close the position before removing the token"
+        )
+        for attr, value in prev.items():
+            setattr(cfg, attr, value)
 
 
 def _paper_buy(
@@ -177,15 +222,20 @@ def _capture_baseline() -> None:
     global initial_primary_balance, initial_secondary_balances
     global initial_primary_price, initial_secondary_prices
 
-    initial_primary_balance = find_balance(primary_mint) or 0.0
-    initial_secondary_balances = [find_balance(mint) or 0.0 for mint in secondary_mints]
+    cfg = config()
+    initial_primary_balance = find_balance(cfg.primary_mint) or 0.0
+    initial_secondary_balances = [
+        find_balance(mint) or 0.0 for mint in cfg.secondary_mints
+    ]
 
-    prices = fetch_prices([primary_mint, *secondary_mints])
+    prices = fetch_prices([cfg.primary_mint, *cfg.secondary_mints])
     for mint, price in prices.items():
         if price > 0:
             _last_price_map[mint] = price
-    initial_primary_price = _last_price_map.get(primary_mint, 0.0)
-    initial_secondary_prices = [_last_price_map.get(mint, 0.0) for mint in secondary_mints]
+    initial_primary_price = _last_price_map.get(cfg.primary_mint, 0.0)
+    initial_secondary_prices = [
+        _last_price_map.get(mint, 0.0) for mint in cfg.secondary_mints
+    ]
 
     if not initial_primary_price or any(p == 0 for p in initial_secondary_prices):
         log_general.warning(
@@ -210,8 +260,9 @@ def _as_float(value: Any) -> float:
 
 
 def perform_analysis(state: UIState) -> None:
+    cfg = config()
     data_frames: list[pd.DataFrame] = []
-    price_map = fetch_prices([primary_mint, *secondary_mints])
+    price_map = fetch_prices([cfg.primary_mint, *cfg.secondary_mints])
     for mint, price in price_map.items():
         if price > 0:
             _last_price_map[mint] = price
@@ -221,11 +272,11 @@ def perform_analysis(state: UIState) -> None:
             price_map[mint] = _last_price_map.get(mint, 0.0)
 
     for secondary_mint, secondary_mint_symbol in zip(
-        secondary_mints, secondary_mint_symbols
+        cfg.secondary_mints, cfg.secondary_mint_symbols
     ):
         try:
             candles = data_source.fetch_candles(
-                secondary_mint_symbol, primary_mint_symbol, "1m", 50
+                secondary_mint_symbol, cfg.primary_mint_symbol, "1m", 50
             )
             new_df = pd.DataFrame(
                 candles, columns=["close", "high", "low", "open", "time"]
@@ -263,7 +314,7 @@ def perform_analysis(state: UIState) -> None:
 
             # Evaluate entry/exit AFTER risk columns are attached so protective
             # exits (stoploss / takeprofit / trailing_stoploss) can fire.
-            df = strategy(new_df)
+            df = strategy(new_df, secondary_mint_symbol)
         except Exception as e:  # noqa: BLE001 - one token must not abort the cycle
             log_general.warning(f"analysis failed for {secondary_mint_symbol}: {e}")
             data_frames.append(None)
@@ -294,28 +345,43 @@ def perform_analysis(state: UIState) -> None:
         try:
             from sol_trade.sentiment import update_sentiment
 
-            update_sentiment(secondary_mint_symbols)
+            update_sentiment(cfg.secondary_mint_symbols)
         except Exception as e:  # noqa: BLE001 - optional feature failure; log and continue
             log_general.warning(f"sentiment update failed: {e}")
 
-    current_primary_balance = _balance_cache.get(primary_mint)
-    current_secondary_balances = [_balance_cache.get(mint) for mint in secondary_mints]
+    current_primary_balance = _balance_cache.get(cfg.primary_mint)
+    current_secondary_balances = [
+        _balance_cache.get(mint) for mint in cfg.secondary_mints
+    ]
     initial_total_value = (initial_primary_balance * initial_primary_price) + sum(
         initial_secondary_balance * initial_secondary_price
         for initial_secondary_balance, initial_secondary_price in zip(
             initial_secondary_balances, initial_secondary_prices
         )
     )
-    current_total_value = (current_primary_balance * price_map.get(primary_mint, 0.0)) + sum(
+    current_total_value = (current_primary_balance * price_map.get(cfg.primary_mint, 0.0)) + sum(
         current_secondary_balance * price_map.get(secondary_mint, 0.0)
         for current_secondary_balance, secondary_mint in zip(
-            current_secondary_balances, secondary_mints
+            current_secondary_balances, cfg.secondary_mints
         )
     )
     total_profit = current_total_value - initial_total_value
 
+    # Total capital for weighted buy budgeting: cash plus every tracked position.
+    global _current_total_capital
+    positions_value = 0.0
+    for df, mint, symbol in zip(data_frames, cfg.secondary_mints, cfg.secondary_mint_symbols):
+        if df is None:
+            continue
+        last = df.iloc[-1]
+        size = _as_float(last.get("position_size"))
+        if size > 0:
+            price = price_map.get(mint, 0.0) or _as_float(last.get("close"))
+            positions_value += size * price
+    _current_total_capital = current_primary_balance + positions_value
+
     for df, secondary_mint, secondary_mint_symbol in zip(
-        data_frames, secondary_mints, secondary_mint_symbols
+        data_frames, cfg.secondary_mints, cfg.secondary_mint_symbols
     ):
         if df is None:
             continue
@@ -327,7 +393,7 @@ def perform_analysis(state: UIState) -> None:
 
     # Push the analysis results to the UI
     tokens = []
-    for df, symbol in zip(data_frames, secondary_mint_symbols):
+    for df, symbol in zip(data_frames, cfg.secondary_mint_symbols):
         if df is None:
             continue
         last = df.iloc[-1]
@@ -352,9 +418,9 @@ def perform_analysis(state: UIState) -> None:
     try:
         raw_holdings = get_all_token_holdings()
         mint_to_symbol = {
-            config().primary_mint: primary_mint_symbol,
+            cfg.primary_mint: cfg.primary_mint_symbol,
             config().sol_mint: "SOL",
-            **dict(zip(secondary_mints, secondary_mint_symbols)),
+            **dict(zip(cfg.secondary_mints, cfg.secondary_mint_symbols)),
         }
         known_prices = {mint: price for mint, price in price_map.items() if price > 0}
         total = 0.0
@@ -389,6 +455,7 @@ def handle_buy_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: str
     """Execute a buy when the last bar has an entry signal; returns success."""
     if df["entry"].iat[-1] == 1:
         mint_symbol = cast(str, df["symbol"].iat[0])
+        cfg = config()
 
         # Check sentiment circuit breaker
         if config().sentiment_enabled:
@@ -416,12 +483,27 @@ def handle_buy_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: str
             return False
 
         # Apply position size modifier
-        input_amount = _balance_cache.get(primary_mint)
+        input_amount = _balance_cache.get(cfg.primary_mint)
         if input_amount <= 0:
             log_transaction.info(
-                f"SolTrade has detected a buy signal, but does not have enough {primary_mint_symbol} to trade."
+                f"SolTrade has detected a buy signal, but does not have enough {cfg.primary_mint_symbol} to trade."
             )
             return False
+
+        # Weighted portfolio budget: buy only up to this token's slice of total
+        # capital (cash + all tracked positions). Equal split when weights unset.
+        # The buy path is only reached with no open position (perform_analysis
+        # dispatches position-holding tokens to the sell handler), so this
+        # token contributes no position value to subtract.
+        capital = _current_total_capital or input_amount
+        budget = _token_weight(secondary_mint_symbol) * capital
+        if budget <= 0:
+            log_transaction.info(
+                f"buy signal for {secondary_mint_symbol} skipped: "
+                "portfolio weight is zero or the target slice is filled"
+            )
+            return False
+        input_amount = min(input_amount, budget)
 
         size_modifier = result["size_modifier"]
         if size_modifier < 1.0:
@@ -431,24 +513,24 @@ def handle_buy_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: str
             )
 
         log_transaction.info(
-            f"SolTrade has detected a buy signal for {mint_symbol} using {input_amount} {primary_mint_symbol}."
+            f"SolTrade has detected a buy signal for {mint_symbol} using {input_amount} {cfg.primary_mint_symbol}."
         )
         is_swapped = (
             _paper_buy(
                 input_amount,
                 df,
-                primary_mint,
+                cfg.primary_mint,
                 secondary_mint,
-                primary_mint_symbol,
+                cfg.primary_mint_symbol,
                 secondary_mint_symbol,
             )
             if _dry_run
             else asyncio.run(
                 perform_swap(
                     input_amount,
-                    primary_mint,
+                    cfg.primary_mint,
                     secondary_mint,
-                    primary_mint_symbol,
+                    cfg.primary_mint_symbol,
                     secondary_mint_symbol,
                 )
             )
@@ -471,7 +553,7 @@ def handle_buy_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: str
             df = calc_trailing_stoploss(df)
             df = set_position(df, True)
             save_dataframe_to_csv(df, data_file_path)
-            _balance_cache.invalidate(primary_mint)
+            _balance_cache.invalidate(cfg.primary_mint)
             _balance_cache.invalidate(secondary_mint)
             return True
         return False
@@ -567,9 +649,9 @@ def handle_sell_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: st
             _paper_sell(
                 input_amount,
                 df,
-                primary_mint,
+                config().primary_mint,
                 secondary_mint,
-                primary_mint_symbol,
+                config().primary_mint_symbol,
                 secondary_mint_symbol,
             )
             if _dry_run
@@ -577,9 +659,9 @@ def handle_sell_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: st
                 perform_swap(
                     input_amount,
                     secondary_mint,
-                    primary_mint,
+                    config().primary_mint,
                     secondary_mint_symbol,
-                    primary_mint_symbol,
+                    config().primary_mint_symbol,
                 )
             )
         )
@@ -587,7 +669,7 @@ def handle_sell_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: st
             df = _close_position_bookkeeping(df, input_amount)
             save_dataframe_to_csv(df, data_file_path)
             _balance_cache.invalidate(secondary_mint)
-            _balance_cache.invalidate(primary_mint)
+            _balance_cache.invalidate(config().primary_mint)
             return True
         return False
     return False
@@ -599,7 +681,7 @@ def start_trading(state: UIState, dry_run: bool = False) -> None:
     With ``dry_run=True`` swaps are simulated against the latest close and the
     real wallet is never touched.
     """
-    global _stop_event, _trading_thread, _dry_run
+    global _stop_event, _trading_thread, _dry_run, _baseline_key
 
     _dry_run = dry_run
     _balance_cache.set_paper_mode(dry_run)
@@ -611,12 +693,25 @@ def start_trading(state: UIState, dry_run: bool = False) -> None:
         )
     log_general.info("SolTrade has now initialized the trading algorithm.")
     _capture_baseline()
+    _baseline_key = (config().primary_mint, tuple(config().secondary_mints))
 
     def _run() -> None:
+        global _baseline_key
         state.update(lambda s: setattr(s, "running", True))
         try:
             while not _stop_event.is_set():
+                prev_tokens = _token_set_snapshot()
                 config().maybe_reload_config()
+                if _token_set_snapshot() != prev_tokens:
+                    # Reject removals that would orphan an open position.
+                    _enforce_token_change_guard(prev_tokens)
+                token_key = (config().primary_mint, tuple(config().secondary_mints))
+                if token_key != _baseline_key:
+                    log_general.info(
+                        "trading tokens changed — recapturing P&L baseline"
+                    )
+                    _capture_baseline()
+                    _baseline_key = token_key
                 try:
                     perform_analysis(state)
                 except Exception as e:  # noqa: BLE001 - keep the loop alive across errors

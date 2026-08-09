@@ -11,6 +11,7 @@ def _reset_dry_run() -> None:
     trading._dry_run = False
     trading._balance_cache.set_paper_mode(False)
     trading._balance_cache._paper = {}
+    trading._current_total_capital = 0.0
 
 
 def test_paper_buy_updates_ledger():
@@ -118,6 +119,92 @@ def _trading_df(entry: int = 0, exit_: int = 0, size: float | None = 2.0) -> pd.
         df["trailing_stoploss"] = 100.0
         df["trailing_stoploss_target"] = 110.0
     return df
+
+
+def test_weighted_buy_capped_at_weight_slice(tmp_path, monkeypatch):
+    _reset_dry_run()
+    trading._dry_run = True
+    trading._balance_cache.set_paper_mode(True)
+    trading._balance_cache.set(config().primary_mint, 100.0)
+    trading._balance_cache.set(config().secondary_mints[0], 0.0)
+    monkeypatch.setattr(config(), "confluence_enabled", False)
+    monkeypatch.setattr(config(), "secondary_mint_symbols", ["SOL", "JUP"])
+    monkeypatch.setattr(config(), "secondary_weights", [0.6, 0.4])
+    df = _trading_df(entry=1)
+
+    ok = trading.handle_buy_signal(df, config().secondary_mints[0], str(tmp_path / "sol.csv"), "SOL")
+
+    assert ok
+    # Budget = 0.6 x 100 capital = 60 USDC -> 60 / 159 SOL, not the full balance.
+    assert float(df["position_size"].iat[-1]) == pytest.approx(60.0 / 159.0)
+    assert float(df["entry_price"].iat[-1]) == pytest.approx(159.0)
+    _reset_dry_run()
+
+
+def test_zero_weight_token_never_buys(tmp_path, monkeypatch):
+    _reset_dry_run()
+    trading._dry_run = True
+    trading._balance_cache.set_paper_mode(True)
+    trading._balance_cache.set(config().primary_mint, 100.0)
+    trading._balance_cache.set(config().secondary_mints[0], 0.0)
+    monkeypatch.setattr(config(), "confluence_enabled", False)
+    monkeypatch.setattr(config(), "secondary_mint_symbols", ["SOL", "JUP"])
+    monkeypatch.setattr(config(), "secondary_weights", [0.0, 1.0])
+    df = _trading_df(entry=1)
+
+    ok = trading.handle_buy_signal(df, config().secondary_mints[0], str(tmp_path / "sol.csv"), "SOL")
+
+    assert not ok
+    # No trade: the carried position bookkeeping is untouched.
+    assert float(df["position_size"].iat[-1]) == pytest.approx(2.0)
+    assert float(df["entry_price"].iat[-1]) == pytest.approx(105.0)
+    _reset_dry_run()
+
+
+def test_token_change_guard_blocks_removal_of_open_position(tmp_path, monkeypatch):
+    from sol_trade.config import config as get_config
+
+    cfg = get_config()
+    prev = {
+        "secondary_mints": ["M1"],
+        "secondary_mint_symbols": ["SOL"],
+        "secondary_weights": [],
+    }
+    # The removed token has an open position persisted in its CSV.
+    open_csv = tmp_path / "SOL_data.csv"
+    open_csv.write_text("close,position\n1.0,True\n")
+    monkeypatch.setattr(
+        trading, "read_dataframe_from_csv", lambda p: pd.read_csv(str(open_csv))
+    )
+    monkeypatch.setattr(cfg, "secondary_mints", ["M2"])
+    monkeypatch.setattr(cfg, "secondary_mint_symbols", ["JUP"])
+
+    trading._enforce_token_change_guard(prev)
+
+    assert cfg.secondary_mints == ["M1"]  # rolled back
+    assert cfg.secondary_mint_symbols == ["SOL"]
+
+
+def test_token_change_guard_allows_removal_without_position(monkeypatch):
+    from sol_trade.config import config as get_config
+
+    cfg = get_config()
+    prev = {
+        "secondary_mints": ["M1"],
+        "secondary_mint_symbols": ["SOL"],
+        "secondary_weights": [],
+    }
+    def _no_csv(_path: str) -> pd.DataFrame:
+        raise FileNotFoundError()
+
+    monkeypatch.setattr(trading, "read_dataframe_from_csv", _no_csv)
+    monkeypatch.setattr(cfg, "secondary_mints", ["M2"])
+    monkeypatch.setattr(cfg, "secondary_mint_symbols", ["JUP"])
+
+    trading._enforce_token_change_guard(prev)
+
+    assert cfg.secondary_mints == ["M2"]  # change stands
+    assert cfg.secondary_mint_symbols == ["JUP"]
 
 
 def test_buy_records_fill_price_and_position_size(tmp_path, monkeypatch):
