@@ -9,6 +9,7 @@ from sol_trade.strategy import (
     calc_stoploss,
     calc_takeprofit,
     calc_trailing_stoploss,
+    resolve_strategy_name,
     strategy,
 )
 from strategies.default_strategy import DefaultStrategy
@@ -63,6 +64,18 @@ def test_risk_calculation_uses_own_instance(default_strategy):
     assert float(s["stoploss"].iat[-1]) == pytest.approx(110.0 * 0.95)
     assert float(s["takeprofit"].iat[-1]) == pytest.approx(110.0 * 1.10)
     assert "trailing_stoploss" in s.columns
+
+
+def test_resolve_strategy_name_per_token_override(default_strategy):
+    from sol_trade.config import config
+
+    config().token_strategies = {"SOL": "momentum"}
+    try:
+        assert resolve_strategy_name("SOL") == "momentum"  # per-token wins
+        assert resolve_strategy_name("JUP") == "default"  # unlisted -> global
+        assert resolve_strategy_name(None) == "default"
+    finally:
+        config().token_strategies = {}
 
 
 def test_trailing_stoploss_carries_peak_across_windows(default_strategy):

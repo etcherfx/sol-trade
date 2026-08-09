@@ -64,14 +64,25 @@ def load_strategy_class(strategy_name: str) -> type:
     return strategy_class
 
 
-def strategy(df: pd.DataFrame) -> pd.DataFrame:
+def resolve_strategy_name(symbol: str | None = None) -> str:
+    """Pick the strategy for a token: per-token override, else the global one."""
+    name = config().strategy or "default"
+    if symbol:
+        name = config().token_strategies.get(symbol) or name
+    return name
+
+
+def strategy(df: pd.DataFrame, symbol: str | None = None) -> pd.DataFrame:
     """Apply the configured strategy to the dataframe and return it.
+
+    ``symbol`` selects a per-token strategy override (``token_strategies`` in
+    config.json); when absent or unlisted the global ``strategy`` is used.
 
     The strategy instance is attached to the dataframe so risk parameters stay
     bound to the token they were computed for (a plain attribute, since pandas
     deep-copies ``df.attrs`` which would recurse through the instance's df).
     """
-    strategy_name = config().strategy or "default"
+    strategy_name = resolve_strategy_name(symbol)
     try:
         StrategyClass = load_strategy_class(strategy_name)
         instance = StrategyClass(df)
