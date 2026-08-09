@@ -524,6 +524,14 @@ def handle_sell_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: st
     if df["exit"].iat[-1] == 1:
         mint_symbol = cast(str, df["symbol"].iat[0])
 
+        # Sell at most the tracked position: the wallet may hold more than the
+        # bot bought (pre-existing balance), and selling beyond the position
+        # would make bookkeeping and the real balance diverge.
+        if "position_size" in df.columns:
+            position_size = _as_float(df["position_size"].iat[-1])
+            if position_size > 0:
+                input_amount = min(input_amount, position_size)
+
         # Nothing to sell — mirrors the buy-side balance guard.
         if input_amount <= 0:
             log_general.warning(

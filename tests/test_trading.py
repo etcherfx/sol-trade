@@ -212,6 +212,29 @@ def test_trailing_stop_fires_immediately_on_fresh_breach(tmp_path, monkeypatch):
     _reset_dry_run()
 
 
+def test_sell_capped_at_tracked_position(tmp_path, monkeypatch):
+    _reset_dry_run()
+    trading._dry_run = True
+    trading._balance_cache.set_paper_mode(True)
+    trading._balance_cache.set(config().primary_mint, 0.0)
+    trading._balance_cache.set(config().secondary_mints[0], 5.0)  # pre-existing extra
+    monkeypatch.setattr(config(), "confluence_enabled", False)
+    monkeypatch.setattr(config(), "sentiment_enabled", False)
+    df = _trading_df(exit_=1, size=2.0)  # tracked position is 2.0
+    csv_path = tmp_path / "sol.csv"
+
+    ok = trading.handle_sell_signal(
+        df, config().secondary_mints[0], str(csv_path), "SOL"
+    )
+
+    assert ok
+    # Only the tracked 2.0 was sold; the pre-existing 3.0 stays in the ledger.
+    assert trading._balance_cache.get(config().secondary_mints[0]) == pytest.approx(3.0)
+    saved = pd.read_csv(csv_path)
+    assert bool(saved["position"].iat[-1]) is False  # position fully closed
+    _reset_dry_run()
+
+
 def test_full_close_clears_position_and_columns(tmp_path, monkeypatch):
     _reset_dry_run()
     trading._dry_run = True
