@@ -16,14 +16,15 @@ from sol_trade.log import log_general
 # The application itself is synchronous, and asyncio.run() cannot be used
 # because RPC calls also happen from inside an already-running event loop
 # (e.g. trading.py's asyncio.run(perform_swap(...)) -> config().decimals()).
-_async_loop_holder: dict[str, asyncio.AbstractEventLoop] = {}
+_async_loop: asyncio.AbstractEventLoop | None = None
 _async_loop_ready = threading.Event()
 
 
 def _run_event_loop() -> None:
+    global _async_loop
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    _async_loop_holder["loop"] = loop
+    _async_loop = loop
     _async_loop_ready.set()
     loop.run_forever()
 
@@ -40,8 +41,9 @@ def run_async(coro: Coroutine[Any, Any, Any]) -> Any:
     Safe to call from synchronous code and from inside another running event
     loop. The AsyncClient stays bound to this single loop.
     """
-    loop = _async_loop_holder["loop"]
-    future: Future = asyncio.run_coroutine_threadsafe(coro, loop)
+    if _async_loop is None:
+        raise RuntimeError("background async loop not started")
+    future: Future = asyncio.run_coroutine_threadsafe(coro, _async_loop)
     return future.result()
 
 
