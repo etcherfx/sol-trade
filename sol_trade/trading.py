@@ -12,6 +12,8 @@ from sol_trade import data_source
 from sol_trade.config import config
 from sol_trade.confluence import _is_protective_exit
 from sol_trade.log import log_general, log_transaction
+from sol_trade.market_regime import update_regime
+from sol_trade.sentiment import is_market_crash, is_token_blocked, update_sentiment
 from sol_trade.strategy import (
     calc_stoploss,
     calc_takeprofit,
@@ -22,6 +24,7 @@ from sol_trade.strategy import (
 from sol_trade.transactions import perform_swap
 from sol_trade.ui import Holding, TokenStatus, UIState
 from sol_trade.wallet import find_balance, get_all_token_holdings, minimum_sol_needed
+from sol_trade.whale_tracker import update_whale_data
 
 _http_session = requests.Session()
 
@@ -369,8 +372,6 @@ def perform_analysis(state: UIState) -> None:
     # Update whale tracking data
     if config().whale_tracking_enabled:
         try:
-            from sol_trade.whale_tracker import update_whale_data
-
             update_whale_data()
         except Exception as e:  # noqa: BLE001 - optional feature failure; log and continue
             log_general.warning(f"whale tracker update failed: {e}")
@@ -378,8 +379,6 @@ def perform_analysis(state: UIState) -> None:
     # Update market regime (only if stale)
     if config().market_regime_enabled:
         try:
-            from sol_trade.market_regime import update_regime
-
             update_regime()
         except Exception as e:  # noqa: BLE001 - optional feature failure; log and continue
             log_general.warning(f"market regime update failed: {e}")
@@ -387,8 +386,6 @@ def perform_analysis(state: UIState) -> None:
     # Update sentiment data (only if stale)
     if config().sentiment_enabled:
         try:
-            from sol_trade.sentiment import update_sentiment
-
             update_sentiment(cfg.secondary_mint_symbols)
         except Exception as e:  # noqa: BLE001 - optional feature failure; log and continue
             log_general.warning(f"sentiment update failed: {e}")
@@ -503,8 +500,6 @@ def handle_buy_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: str
 
         # Check sentiment circuit breaker
         if config().sentiment_enabled:
-            from sol_trade.sentiment import is_market_crash, is_token_blocked
-
             if is_token_blocked(secondary_mint_symbol):
                 log_transaction.info(
                     f"trading paused for {secondary_mint_symbol}: sentiment circuit breaker active"
