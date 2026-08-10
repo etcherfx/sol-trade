@@ -154,3 +154,55 @@ def test_create_order_escalates_slippage_on_quote_failure(monkeypatch):
     assert result["requestId"] == "r1"
     assert client.calls[0]["slippageBps"] == 50
     assert client.calls[1]["dynamicSlippage"] is True
+
+
+def test_perform_swap_treats_lost_execute_as_success_when_balance_moved(monkeypatch):
+    import asyncio
+
+    from sol_trade import transactions
+
+    async def fake_create(*args, **kwargs):
+        return {"requestId": "r1", "transaction": "tx", "outAmount": "1000000"}
+
+    async def fake_execute(order):
+        raise RuntimeError("connection lost after submit")
+
+    monkeypatch.setattr(transactions, "create_order", fake_create)
+    monkeypatch.setattr(transactions, "execute_order", fake_execute)
+    monkeypatch.setattr(config(), "decimals", lambda mint: 1_000_000)
+
+    # Balance sampler: 2.0 before, 0.5 after -> the swap consumed the funds.
+    balances = iter([2.0, 0.5])
+    monkeypatch.setattr(transactions, "_input_balance", lambda mint: next(balances))
+
+    result = asyncio.run(
+        transactions.perform_swap(1.0, "SOL_MINT", "USDC_MINT", "SOL", "USDC")
+    )
+
+    # Executed via the order quote despite the lost execute response.
+    assert result == {"out_amount": 1.0, "sent_amount": 1.0}
+
+
+def test_perform_swap_returns_none_when_balance_unmoved(monkeypatch):
+    import asyncio
+
+    from sol_trade import transactions
+
+    async def fake_create(*args, **kwargs):
+        return {"requestId": "r1", "transaction": "tx", "outAmount": "1000000"}
+
+    async def fake_execute(order):
+        raise RuntimeError("connection lost after submit")
+
+    monkeypatch.setattr(transactions, "create_order", fake_create)
+    monkeypatch.setattr(transactions, "execute_order", fake_execute)
+    monkeypatch.setattr(config(), "decimals", lambda mint: 1_000_000)
+
+    # Balance unchanged -> the swap never landed -> genuine failure.
+    monkeypatch.setattr(transactions, "_input_balance", lambda mint: 2.0)
+
+    result = asyncio.run(
+        transactions.perform_swap(1.0, "SOL_MINT", "USDC_MINT", "SOL", "USDC")
+    )
+
+    assert result is None

@@ -7,6 +7,27 @@ from solders.transaction import VersionedTransaction
 
 from sol_trade.config import config
 from sol_trade.log import log_general, log_transaction
+from sol_trade.wallet import find_balance
+
+
+def _input_balance(mint: str) -> float | None:
+    """Wallet balance for the input token, or None when the RPC is down."""
+    try:
+        return find_balance(mint)
+    except Exception:  # noqa: BLE001 - reconciliation is best-effort
+        return None
+
+
+def _swap_consumed(mint: str, sent_amount: float, balance_before: float | None) -> bool:
+    """True when the wallet balance dropped by roughly the full order size."""
+    if balance_before is None:
+        return False
+    after = _input_balance(mint)
+    if after is None:
+        return False
+    # The swap moves the entire sent amount; require ~90% of it to be gone so
+    # dust and fee movements do not create false positives.
+    return balance_before - after >= sent_amount * 0.9
 
 
 class OrderError(Exception):
@@ -190,6 +211,12 @@ async def perform_swap(
     """Swap tokens via Jupiter; returns fill amounts on success, else None."""
     log_general.info("SolTrade is taking a market position.")
 
+    # Sample the input balance so a lost/failed execute response can be
+    # reconciled against the wallet instead of blindly retrying (which could
+    # double-trade a landed swap) or giving up (which would leave the position
+    # untracked).
+    balance_before = _input_balance(sent_token_mint)
+
     order = execute_result = None
     is_tx_successful = False
 
@@ -214,6 +241,17 @@ async def perform_swap(
                 log_general.warning(
                     f"SolTrade failed to complete transaction {i}. Retrying. Error: {e}"
                 )
+                if order is not None and _swap_consumed(
+                    sent_token_mint, sent_amount, balance_before
+                ):
+                    # The order was submitted and the funds moved even though
+                    # the response was lost — treat it as executed.
+                    log_general.warning(
+                        "execute response lost but the input balance moved; "
+                        "treating the swap as executed"
+                    )
+                    is_tx_successful = True
+                    break
                 continue
 
     if not is_tx_successful:
