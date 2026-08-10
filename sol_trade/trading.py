@@ -519,7 +519,7 @@ def handle_buy_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: str
         # Evaluate confluence
         from sol_trade.confluence import evaluate_buy_confluence
 
-        result = evaluate_buy_confluence("BUY", secondary_mint_symbol)
+        result = evaluate_buy_confluence(secondary_mint_symbol)
         if result["action"] == "skip":
             log_transaction.info(
                 f"buy signal for {secondary_mint_symbol} skipped: {result['reason']}"
@@ -671,7 +671,7 @@ def handle_sell_signal(df: pd.DataFrame, secondary_mint: str, data_file_path: st
             # Evaluate confluence for sells
             from sol_trade.confluence import evaluate_sell_confluence
 
-            result = evaluate_sell_confluence("SELL", secondary_mint_symbol)
+            result = evaluate_sell_confluence(secondary_mint_symbol)
             if result["action"] == "skip":
                 log_transaction.info(
                     f"sell signal for {secondary_mint_symbol} skipped: {result['reason']}"

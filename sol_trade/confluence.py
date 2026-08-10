@@ -7,6 +7,9 @@ and sentiment circuit breaker state.
 import pandas as pd
 
 from sol_trade.config import config
+from sol_trade.market_regime import get_position_modifier
+from sol_trade.sentiment import is_market_crash, is_token_blocked
+from sol_trade.whale_tracker import get_whale_signal
 
 
 def _is_protective_exit(df: "pd.DataFrame") -> bool:
@@ -23,7 +26,7 @@ def _is_protective_exit(df: "pd.DataFrame") -> bool:
     )
 
 
-def evaluate_buy_confluence(ta_signal: str, token_symbol: str) -> dict[str, object]:
+def evaluate_buy_confluence(token_symbol: str) -> dict[str, object]:
     """Evaluate confluence for a buy signal.
 
     Returns:
@@ -39,10 +42,8 @@ def evaluate_buy_confluence(ta_signal: str, token_symbol: str) -> dict[str, obje
     if not cfg.confluence_enabled:
         return {"action": "full", "reason": "confluence_disabled", "size_modifier": 1.0}
 
-    # Check sentiment circuit breaker first
+    # Check sentiment circuit breaker
     if cfg.sentiment_enabled:
-        from sol_trade.sentiment import is_market_crash, is_token_blocked
-
         if is_token_blocked(token_symbol):
             return {
                 "action": "skip",
@@ -60,7 +61,7 @@ def evaluate_buy_confluence(ta_signal: str, token_symbol: str) -> dict[str, obje
     whale_signal = _get_whale_signal(token_symbol)
 
     # Decision matrix for buys
-    decision = _buy_decision_matrix(ta_signal, whale_signal)
+    decision = _buy_decision_matrix(whale_signal)
 
     # Apply regime modifier
     regime_modifier = _get_regime_modifier()
@@ -85,7 +86,7 @@ def evaluate_buy_confluence(ta_signal: str, token_symbol: str) -> dict[str, obje
     }
 
 
-def evaluate_sell_confluence(ta_signal: str, token_symbol: str) -> dict[str, object]:
+def evaluate_sell_confluence(token_symbol: str) -> dict[str, object]:
     """Evaluate confluence for a sell signal.
 
     Returns:
@@ -105,7 +106,7 @@ def evaluate_sell_confluence(ta_signal: str, token_symbol: str) -> dict[str, obj
     whale_signal = _get_whale_signal(token_symbol)
 
     # Decision matrix for sells
-    decision = _sell_decision_matrix(ta_signal, whale_signal)
+    decision = _sell_decision_matrix(whale_signal)
 
     # Sells are not affected by regime modifier — we want to exit in bearish markets
     # Determine action based on modifier
@@ -129,12 +130,7 @@ def _get_whale_signal(token_symbol: str) -> str:
     if not cfg.whale_tracking_enabled:
         return "NO_DATA"
 
-    try:
-        from sol_trade.whale_tracker import get_whale_signal
-
-        return get_whale_signal(token_symbol)
-    except ImportError:
-        return "NO_DATA"
+    return get_whale_signal(token_symbol)
 
 
 def _get_regime_modifier() -> float:
@@ -143,15 +139,10 @@ def _get_regime_modifier() -> float:
     if not cfg.market_regime_enabled:
         return 1.0
 
-    try:
-        from sol_trade.market_regime import get_position_modifier
-
-        return get_position_modifier()
-    except ImportError:
-        return 1.0
+    return get_position_modifier()
 
 
-def _buy_decision_matrix(ta_signal: str, whale_signal: str) -> dict[str, object]:
+def _buy_decision_matrix(whale_signal: str) -> dict[str, object]:
     """Buy decision matrix based on TA signal and whale activity.
 
     | TA    | Whale          | Action | Size |
@@ -171,7 +162,7 @@ def _buy_decision_matrix(ta_signal: str, whale_signal: str) -> dict[str, object]
         return {"size_modifier": 0.5, "reason": "whales_neutral"}
 
 
-def _sell_decision_matrix(ta_signal: str, whale_signal: str) -> dict[str, object]:
+def _sell_decision_matrix(whale_signal: str) -> dict[str, object]:
     """Sell decision matrix based on TA signal and whale activity.
 
     | TA    | Whale          | Action  | Size |
