@@ -32,12 +32,6 @@ class CustomFormatter(logging.Formatter):
         return formatter.format(record)
 
 
-class AutoFlushStreamHandler(StreamHandler):
-    def emit(self, record: logging.LogRecord):
-        super().emit(record)
-        self.flush()
-
-
 os.makedirs("logs", exist_ok=True)
 
 
@@ -56,7 +50,7 @@ def setup_logger(
     logger = logging.getLogger(name)
     logger.setLevel(level)
     logger.addHandler(file_handler)
-    console_handler = AutoFlushStreamHandler(sys.stdout)
+    console_handler = StreamHandler(sys.stdout)
     console_handler.setFormatter(CustomFormatter())
     # Console output is off by default: the full-screen UI owns the terminal.
     # CLI entry points opt back in via enable_console_logging().
@@ -119,5 +113,5 @@ def enable_console_logging() -> None:
     """Restore console output for CLI entry points."""
     for logger in (log_general, log_transaction):
         for handler in logger.handlers:
-            if isinstance(handler, AutoFlushStreamHandler):
+            if isinstance(handler, StreamHandler) and handler.stream is sys.stdout:
                 handler.setLevel(logging.DEBUG)
