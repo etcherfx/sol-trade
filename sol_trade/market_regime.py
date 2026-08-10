@@ -3,6 +3,8 @@
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import pandas as pd
+
 from sol_trade import data_source
 from sol_trade.config import config
 from sol_trade.log import log_general
@@ -41,18 +43,6 @@ def _fetch_sol_usdc_daily() -> list[dict]:
     return data_source.fetch_candles("SOL", "USDC", "1d", 30)
 
 
-def _compute_sma(prices: list[float], period: int) -> list[float]:
-    """Compute simple moving average."""
-    sma = []
-    for i in range(len(prices)):
-        if i < period - 1:
-            sma.append(None)
-        else:
-            window = prices[i - period + 1 : i + 1]
-            sma.append(sum(window) / period)
-    return sma
-
-
 def update_regime() -> None:
     """Fetch daily data and compute regime."""
     cfg = config()
@@ -73,9 +63,9 @@ def update_regime() -> None:
         volumes = [c.get("totalvolume", 0) for c in candles]
 
         # 20-day SMA trend
-        sma20 = _compute_sma(prices, 20)
+        sma20 = pd.Series(prices).rolling(20).mean()
         current_price = prices[-1]
-        current_sma = sma20[-1] if sma20[-1] is not None else current_price
+        current_sma = sma20.iloc[-1] if pd.notna(sma20.iloc[-1]) else current_price
 
         bullish_trend = current_price > current_sma
         bearish_trend = current_price < current_sma
@@ -105,19 +95,6 @@ def update_regime() -> None:
     except Exception as e:  # noqa: BLE001 - RPC failure; fall back to NEUTRAL
         log_general.warning(f"Market regime: failed to update, falling back to NEUTRAL: {e}")
         _save_regime("NEUTRAL", 1.0)
-
-
-def get_regime() -> str:
-    """Return 'BULLISH', 'BEARISH', or 'NEUTRAL'.
-
-    If regime detection is disabled, returns NEUTRAL.
-    """
-    cfg = config()
-    if not cfg.market_regime_enabled:
-        return "NEUTRAL"
-
-    data = _load_regime()
-    return data.get("regime", "NEUTRAL")
 
 
 def get_position_modifier() -> float:
