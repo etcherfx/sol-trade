@@ -11,6 +11,7 @@ def _reset_dry_run() -> None:
     trading._dry_run = False
     trading._balance_cache.set_paper_mode(False)
     trading._balance_cache._paper = {}
+    trading._balance_cache._cache = {}
     trading._current_total_capital = 0.0
 
 
@@ -52,6 +53,94 @@ def test_pick_indicator_resolves_strategy_column_names():
 
     # Nothing present -> 0.0 (dashboard shows a dash-like zero, not a crash).
     assert trading._pick_indicator(pd.Series({"rsi": 10.0}), "ema_s", "ema_fast") == 0.0
+
+
+def test_balance_cache_tolerates_rpc_errors(monkeypatch):
+    _reset_dry_run()
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("rpc down")
+
+    monkeypatch.setattr(trading, "find_balance", _boom)
+    # A non-rate-limit RPC failure must degrade to 0.0, not abort the cycle.
+    assert trading._balance_cache.get("SOME_MINT") == 0.0
+    _reset_dry_run()
+
+
+def test_capture_baseline_tolerates_rpc_errors(monkeypatch):
+    def _boom(*args, **kwargs):
+        raise RuntimeError("rpc down")
+
+    monkeypatch.setattr(trading, "find_balance", _boom)
+    monkeypatch.setattr(trading, "fetch_prices", lambda mints: {})
+    # Startup baseline must survive a transient RPC outage.
+    trading._capture_baseline()
+    assert trading.initial_primary_balance == 0.0
+    assert len(trading.initial_secondary_balances) == len(config().secondary_mints)
+    assert all(b == 0.0 for b in trading.initial_secondary_balances)
+
+
+def test_live_buy_chain_mocked_swap(tmp_path, monkeypatch):
+    _reset_dry_run()  # live path (_dry_run False), swap mocked
+    monkeypatch.setattr(config(), "confluence_enabled", False)
+    monkeypatch.setattr(config(), "sentiment_enabled", False)
+    # Single-token view so the weighted budget is 100% (config has 6 tokens).
+    monkeypatch.setattr(config(), "secondary_mint_symbols", ["SOL"])
+    monkeypatch.setattr(config(), "secondary_mints", [config().secondary_mints[0]])
+    monkeypatch.setattr(config(), "secondary_weights", [])
+
+    async def fake_swap(*args, **kwargs):
+        return {"out_amount": 1.0, "sent_amount": 100.0}
+
+    monkeypatch.setattr(trading, "perform_swap", fake_swap)
+    trading._balance_cache._cache[config().primary_mint] = 100.0
+    trading._balance_cache._cache[config().secondary_mints[0]] = 0.0
+    df = _trading_df(entry=1)
+    csv_path = tmp_path / "sol.csv"
+
+    ok = trading.handle_buy_signal(
+        df, config().secondary_mints[0], str(csv_path), "SOL"
+    )
+
+    assert ok
+    assert bool(df["position"].iat[-1]) is True
+    assert float(df["position_size"].iat[-1]) == pytest.approx(1.0)
+    assert float(df["entry_price"].iat[-1]) == pytest.approx(100.0)  # 100 USDC / 1 SOL
+    saved = pd.read_csv(csv_path)
+    assert bool(saved["position"].iat[-1]) is True
+    assert "stoploss" in saved.columns  # risk levels persisted with the position
+    # Both balances invalidated so the next cycle re-reads the wallet.
+    assert config().primary_mint not in trading._balance_cache._cache
+    assert config().secondary_mints[0] not in trading._balance_cache._cache
+    _reset_dry_run()
+
+
+def test_live_sell_chain_mocked_swap(tmp_path, monkeypatch):
+    _reset_dry_run()  # live path, swap mocked
+    monkeypatch.setattr(config(), "confluence_enabled", False)
+    monkeypatch.setattr(config(), "sentiment_enabled", False)
+
+    async def fake_swap(*args, **kwargs):
+        return {"out_amount": 150.0, "sent_amount": 1.0}  # 1 SOL -> 150 USDC
+
+    monkeypatch.setattr(trading, "perform_swap", fake_swap)
+    trading._balance_cache._cache[config().secondary_mints[0]] = 1.0
+    trading._balance_cache._cache[config().primary_mint] = 0.0
+    df = _trading_df(exit_=1, size=1.0)
+    csv_path = tmp_path / "sol.csv"
+
+    ok = trading.handle_sell_signal(
+        df, config().secondary_mints[0], str(csv_path), "SOL"
+    )
+
+    assert ok
+    assert bool(df["position"].iat[-1]) is False  # full close
+    saved = pd.read_csv(csv_path)
+    for col in ("position_size", "entry_price", "stoploss", "takeprofit"):
+        assert col not in saved.columns
+    assert config().secondary_mints[0] not in trading._balance_cache._cache
+    assert config().primary_mint not in trading._balance_cache._cache
+    _reset_dry_run()
 
 
 def test_paper_buy_updates_ledger():

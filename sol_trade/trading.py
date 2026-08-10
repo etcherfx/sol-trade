@@ -46,12 +46,12 @@ class BalanceCache:
         if self._paper_mode:
             if mint not in self._paper:
                 # Seed the paper ledger from the real wallet once.
-                self._paper[mint] = find_balance(mint) or 0.0
+                self._paper[mint] = _safe_balance(mint)
             return self._paper[mint]
         if mint not in self._cache:
             # find_balance may return None on persistent rate limiting; treat
             # as zero so downstream arithmetic never sees None.
-            self._cache[mint] = find_balance(mint) or 0.0
+            self._cache[mint] = _safe_balance(mint)
         return self._cache[mint]
 
     def set(self, mint: str, value: float) -> None:
@@ -64,6 +64,20 @@ class BalanceCache:
     def invalidate(self, mint: str) -> None:
         if not self._paper_mode:
             self._cache.pop(mint, None)
+
+
+def _safe_balance(mint: str) -> float:
+    """Balance read that degrades to 0.0 on RPC errors.
+
+    find_balance returns None on persistent rate limiting but RAISES on other
+    RPC failures; an unhandled raise here would abort the entire analysis
+    cycle (or startup) for a transient outage.
+    """
+    try:
+        return find_balance(mint) or 0.0
+    except Exception as e:  # noqa: BLE001 - balance outage must not kill the cycle
+        log_general.warning(f"failed to fetch balance for {mint}: {e}")
+        return 0.0
 
 
 _balance_cache = BalanceCache()
@@ -223,9 +237,9 @@ def _capture_baseline() -> None:
     global initial_primary_price, initial_secondary_prices
 
     cfg = config()
-    initial_primary_balance = find_balance(cfg.primary_mint) or 0.0
+    initial_primary_balance = _safe_balance(cfg.primary_mint)
     initial_secondary_balances = [
-        find_balance(mint) or 0.0 for mint in cfg.secondary_mints
+        _safe_balance(mint) for mint in cfg.secondary_mints
     ]
 
     prices = fetch_prices([cfg.primary_mint, *cfg.secondary_mints])
