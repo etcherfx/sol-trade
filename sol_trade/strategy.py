@@ -113,13 +113,6 @@ def set_position(df: pd.DataFrame, position: bool) -> pd.DataFrame:
     return df
 
 
-def calc_entry_price(df: pd.DataFrame) -> pd.DataFrame:
-    """Record the latest close as the entry price."""
-    entry_price = df["close"].iat[-1]
-    df["entry_price"] = entry_price
-    return df
-
-
 def calc_stoploss(df: pd.DataFrame) -> pd.DataFrame:
     """Set a stop-loss level below the fill entry price."""
     sl = float(df.strategy_instance.stoploss)
