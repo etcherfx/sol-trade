@@ -141,20 +141,6 @@ def update_sentiment(token_symbols: list[str]) -> None:
     _save_sentiment_data(existing_data)
 
 
-def get_sentiment(token_symbol: str) -> float:
-    """Return sentiment score from -1 to +1.
-
-    Returns 0.0 (neutral) if sentiment is disabled or no data available.
-    """
-    cfg = config()
-    if not cfg.sentiment_enabled:
-        return 0.0
-
-    data = _load_sentiment_data()
-    entry = data.get(token_symbol, {})
-    return entry.get("score", 0.0)
-
-
 def is_token_blocked(token_symbol: str) -> bool:
     """Return True if trading this token is paused due to bad sentiment."""
     cfg = config()
