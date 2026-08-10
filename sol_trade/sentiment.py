@@ -3,7 +3,7 @@
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import requests
+import httpx
 
 from sol_trade.config import config
 from sol_trade.log import log_general
@@ -44,7 +44,7 @@ def _fetch_reddit_posts(subreddit: str, limit: int = 25) -> list[dict]:
     url = f"https://www.reddit.com/r/{subreddit}.json"
     params = {"limit": limit}
     headers = {"User-Agent": "SolTrade/2.0"}
-    response = requests.get(url, params=params, headers=headers, timeout=30)
+    response = httpx.get(url, params=params, headers=headers, timeout=30)
     if response.status_code != 200:
         return []
     data = response.json()

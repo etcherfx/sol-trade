@@ -1474,7 +1474,6 @@ dependencies = [
     { name = "pandas" },
     { name = "prompt-toolkit" },
     { name = "python-dotenv" },
-    { name = "requests" },
     { name = "solana" },
     { name = "solders" },
 ]
@@ -1493,7 +1492,6 @@ requires-dist = [
     { name = "pandas", specifier = "==3.0.5" },
     { name = "prompt-toolkit", specifier = "==3.0.53" },
     { name = "python-dotenv", specifier = "==1.2.2" },
-    { name = "requests", specifier = "==2.34.2" },
     { name = "solana", specifier = "==0.40.1" },
     { name = "solders", specifier = "==0.28.0" },
 ]

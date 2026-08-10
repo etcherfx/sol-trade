@@ -5,8 +5,8 @@ import time
 from datetime import UTC, datetime
 from typing import Any, cast
 
+import httpx
 import pandas as pd
-import requests
 
 from sol_trade import data_source
 from sol_trade.config import config
@@ -26,7 +26,7 @@ from sol_trade.ui import Holding, TokenStatus, UIState
 from sol_trade.wallet import find_balance, get_all_token_holdings, minimum_sol_needed
 from sol_trade.whale_tracker import update_whale_data
 
-_http_session = requests.Session()
+_http_session = httpx.Client(timeout=10.0)
 
 
 class BalanceCache:
@@ -200,10 +200,10 @@ def fetch_prices(mints: list[str]) -> dict[str, float]:
     url = "https://lite-api.jup.ag/price/v3"
 
     try:
-        response = _http_session.get(url, params=params, timeout=10)
+        response = _http_session.get(url, params=params)
         response.raise_for_status()
         response_json = cast(dict[str, Any], response.json())
-    except requests.exceptions.HTTPError as e:
+    except httpx.HTTPStatusError as e:
         if e.response is not None and e.response.status_code == 401:
             log_general.error(
                 "401 Unauthorized fetching prices from the lite API; "
