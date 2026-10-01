@@ -16,8 +16,6 @@ from sol_trade import config as config_module
 
 _REPO_CWD = os.getcwd()
 _SANDBOX = tempfile.mkdtemp(prefix="sol-trade-tests-")
-# The default data/ paths are relative to the cwd; keep any stray writes here.
-os.chdir(_SANDBOX)
 for _var in ("SOLTRADE_PRIVATE_KEY", "SOLTRADE_JUPITER_API_KEY"):
     os.environ.pop(_var, None)
 
@@ -45,6 +43,12 @@ def _install_test_config() -> None:
 
 
 _install_test_config()
+
+
+def pytest_sessionstart(session):
+    # The default data/ paths are relative to the cwd; keep any stray writes here.
+    # Not at import: pytest resolves testpaths against the cwd after loading this.
+    os.chdir(_SANDBOX)
 
 
 def pytest_sessionfinish(session, exitstatus):
