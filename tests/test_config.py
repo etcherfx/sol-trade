@@ -66,7 +66,7 @@ def test_reload_picks_up_changes_but_pins_structural(tmp_path, monkeypatch):
 def test_reload_token_exchanges(tmp_path, monkeypatch):
     import json
 
-    from sol_trade.config import _file_mtime, config
+    from sol_trade.config import config
 
     c = config()
     snapshot = dict(c.__dict__)
@@ -87,7 +87,7 @@ def test_reload_token_exchanges(tmp_path, monkeypatch):
 def test_reload_normalizes_weights(tmp_path, monkeypatch):
     import json
 
-    from sol_trade.config import _file_mtime, config
+    from sol_trade.config import config
 
     c = config()
     snapshot = dict(c.__dict__)
@@ -116,7 +116,7 @@ def test_reload_normalizes_weights(tmp_path, monkeypatch):
 def test_reload_rejects_mismatched_weights(tmp_path, monkeypatch):
     import json
 
-    from sol_trade.config import _file_mtime, config
+    from sol_trade.config import config
 
     c = config()
     snapshot = dict(c.__dict__)
@@ -147,7 +147,7 @@ def test_reload_rejects_mismatched_weights(tmp_path, monkeypatch):
 def test_reload_rejects_mismatched_mint_symbols(tmp_path, monkeypatch):
     import json
 
-    from sol_trade.config import _file_mtime, config
+    from sol_trade.config import config
 
     c = config()
     snapshot = dict(c.__dict__)
