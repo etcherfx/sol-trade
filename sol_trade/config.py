@@ -35,7 +35,10 @@ def _file_mtime(path: str) -> float:
 
 
 class Config:
-    def __init__(self) -> None:
+    def __init__(
+        self, config_path: str | None = None, dotenv_path: str | None = None
+    ) -> None:
+        """Load settings; paths default to config.json and .env in the project root."""
         self.jupiter_api_key: str = ""
         self.private_key: str = ""
         self.rpc_https: str = "https://api.mainnet-beta.solana.com"
@@ -58,8 +61,8 @@ class Config:
         self.strategy: str = "default"
         self.data_exchange: str = "okx"
         self.candles_path: str = "data/candles.db"
-        self.path = os.path.join(os.path.dirname(__file__), "..", "config.json")
-        self.dotenv_path = os.path.join(os.path.dirname(__file__), "..", ".env")
+        self.path = config_path or os.path.join(os.path.dirname(__file__), "..", "config.json")
+        self.dotenv_path = dotenv_path or os.path.join(os.path.dirname(__file__), "..", ".env")
         load_dotenv(self.dotenv_path)
         self._client: AsyncClient | None = None
         self._decimals_cache: dict[str, int] = {}

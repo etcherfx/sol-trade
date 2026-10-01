@@ -10,7 +10,6 @@ import logging
 import os
 import shutil
 import tempfile
-from unittest import mock
 
 from solders.keypair import Keypair
 
@@ -41,16 +40,9 @@ def _install_test_config() -> None:
     path = os.path.join(_SANDBOX, "config.json")
     with open(path, "w") as file:
         json.dump(_TEST_CONFIG, file)
-    # Config() hardcodes the repo's config.json and .env; skip both, then load ours.
-    with (
-        mock.patch.object(config_module, "load_dotenv"),
-        mock.patch.object(config_module.Config, "load_config"),
-    ):
-        cfg = config_module.Config()
-    cfg.path = path
-    cfg.dotenv_path = os.devnull
-    cfg.load_config()
-    config_module._config_instance = cfg
+    config_module._config_instance = config_module.Config(
+        config_path=path, dotenv_path=os.devnull
+    )
 
 
 _install_test_config()
