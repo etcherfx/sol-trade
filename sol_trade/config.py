@@ -127,7 +127,7 @@ class Config:
             "sentiment_data_path": "data/sentiment_data.json",
         }
 
-        with open(self.path, "r") as file:
+        with open(self.path) as file:
             try:
                 config_data: dict[str, Any] = json.load(file)
             except json.JSONDecodeError as e:
@@ -211,7 +211,7 @@ class Config:
                 self.reload_config()
             except (ValueError, OSError) as e:
                 log_general.error(f"failed to reload config.json: {e}")
-    
+
     def _validate_config(self) -> None:
         """Validate that critical configuration fields are properly set."""
         # Token-set shape errors raise so a malformed hot-reload keeps the
@@ -245,13 +245,13 @@ class Config:
 
         if not self.private_key or self.private_key == "":
             log_general.warning("Private key is not set in .env or config.json. Bot cannot trade.")
-        
+
         if not self.jupiter_api_key or self.jupiter_api_key == "":
             log_general.warning("Jupiter API key is not set. Optional unless required by your api.jup.ag endpoint.")
-        
+
         if not self.rpc_https:
             log_general.error("RPC endpoint is not set in config.json.")
-            
+
         if not self.jup_api:
             log_general.error("Jupiter API endpoint is not set in config.json.")
 
@@ -264,7 +264,7 @@ class Config:
         """
         if mint_address in self._decimals_cache:
             return self._decimals_cache[mint_address]
-        
+
         response = run_async(
             self.client.get_account_info_json_parsed(
                 Pubkey.from_string(mint_address)
@@ -274,7 +274,7 @@ class Config:
         value = (
             10 ** json_response["result"]["value"]["data"]["parsed"]["info"]["decimals"]
         )
-        
+
         self._decimals_cache[mint_address] = value
         return value
 
