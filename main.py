@@ -18,11 +18,15 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    config()
-    if not config().keypair or not config().secondary_mints:
+    try:
+        config().keypair  # noqa: B018 - raises ValueError on a missing/invalid key
+        problem = "" if config().secondary_mints else "no secondary_mints"
+    except (OSError, ValueError) as e:
+        problem = str(e)
+    if problem:
         print(
             "Configuration incomplete: set SOLTRADE_PRIVATE_KEY in .env and "
-            "secondary_mints in config.json. See the README.",
+            f"secondary_mints in config.json. See the README. ({problem})",
             file=sys.stderr,
         )
         sys.exit(1)

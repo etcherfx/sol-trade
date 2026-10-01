@@ -1,6 +1,5 @@
 import json
 import os
-import sys
 from typing import Any
 
 from dotenv import load_dotenv
@@ -280,14 +279,11 @@ class Config:
 
     @property
     def keypair(self) -> Keypair:
+        """Wallet keypair; raises ValueError when the private key is missing or invalid."""
         try:
-            b58_string = self.private_key
-            keypair = Keypair.from_base58_string(b58_string)
-
-            return keypair
+            return Keypair.from_base58_string(self.private_key)
         except (ValueError, TypeError) as e:
-            log_general.error(f"error decoding private key: {e}")
-            sys.exit(1)
+            raise ValueError("invalid or missing private key") from e
 
     @property
     def public_address(self) -> Pubkey:
