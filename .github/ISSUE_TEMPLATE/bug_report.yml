@@ -1,0 +1,65 @@
+name: Bug report
+description: Report something in SolTrade that doesn't work as expected.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please search existing issues first. Never paste your private key, `.env`, Jupiter API key or full `config.json`, and remove wallet addresses you don't want public.
+        Report security problems privately through the [Security tab](https://github.com/etcherfx/sol-trade/security/advisories/new) instead.
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+      description: What did you expect to happen, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Include the relevant settings, such as tokens, strategy and enabled features.
+      placeholder: |
+        1. Set "strategy": "default" and trade SOL
+        2. Run `uv run main.py --dry-run`
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: SolTrade version or commit
+      placeholder: v2.0.0 or a commit hash
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Trading mode
+      options:
+        - Live (real swaps)
+        - Dry run (--dry-run)
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      description: Optional. The output of `uv run python --version`.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs or screenshots
+      description: Optional. Relevant lines from `logs/general.log` or a screenshot of the terminal UI. Remove keys and anything personal first.
+      render: text
