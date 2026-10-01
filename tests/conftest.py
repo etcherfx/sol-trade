@@ -1,21 +1,22 @@
 """Hermetic test environment.
 
 Tests never read the machine's config.json or .env, never sign with the real
-wallet key, and never write to the repo's logs/ or data/. Runs before any test
-module imports sol_trade, so the config singleton below is the only one.
+wallet key, and never write to the repo's data/. Runs before any test module
+imports sol_trade, so the config singleton below is the only one.
 """
 
 import json
-import logging
 import os
 import shutil
 import tempfile
 
 from solders.keypair import Keypair
 
+from sol_trade import config as config_module
+
 _REPO_CWD = os.getcwd()
 _SANDBOX = tempfile.mkdtemp(prefix="sol-trade-tests-")
-# sol_trade.log opens logs/ and the default data paths are relative to the cwd.
+# The default data/ paths are relative to the cwd; keep any stray writes here.
 os.chdir(_SANDBOX)
 for _var in ("SOLTRADE_PRIVATE_KEY", "SOLTRADE_JUPITER_API_KEY"):
     os.environ.pop(_var, None)
@@ -33,10 +34,8 @@ _TEST_CONFIG = {
     "strategy": "default",
 }
 
-def _install_test_config() -> None:
-    # Imported only now: sol_trade.log opens its files relative to the sandbox cwd.
-    from sol_trade import config as config_module
 
+def _install_test_config() -> None:
     path = os.path.join(_SANDBOX, "config.json")
     with open(path, "w") as file:
         json.dump(_TEST_CONFIG, file)
@@ -49,6 +48,5 @@ _install_test_config()
 
 
 def pytest_sessionfinish(session, exitstatus):
-    logging.shutdown()  # release the sandbox's log files before deleting them
     os.chdir(_REPO_CWD)
     shutil.rmtree(_SANDBOX, ignore_errors=True)

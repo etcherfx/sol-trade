@@ -5,6 +5,7 @@ import sys
 
 from sol_trade import trading, ui
 from sol_trade.config import config
+from sol_trade.log import setup_file_logging
 
 
 def main() -> None:
@@ -17,6 +18,7 @@ def main() -> None:
         help="paper trade: simulate swaps, never touch the wallet",
     )
     args = parser.parse_args()
+    setup_file_logging()  # before config(), so its warnings reach the log files
 
     try:
         config().keypair  # noqa: B018 - raises ValueError on a missing/invalid key
