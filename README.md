@@ -1,28 +1,39 @@
 <h1 align="center">
-  <img src="projectInfo/banner.png" alt="SolTrade Banner" width="850">
+  <img src=".github/assets/banner.png" alt="SolTrade" width="850">
 </h1>
 
 <div align="center">
 
-[![License](https://img.shields.io/github/license/etcherfx/sol-trade?style=for-the-badge)](https://github.com/etcherfx/sol-trade/blob/main/LICENSE)
-[![GitHub issues](https://img.shields.io/github/issues/etcherfx/sol-trade?style=for-the-badge)](https://github.com/etcherfx/sol-trade/issues)
-[![GitHub forks](https://img.shields.io/github/forks/etcherfx/sol-trade?style=for-the-badge)](https://github.com/etcherfx/sol-trade/network)
-[![GitHub Release](https://img.shields.io/github/release/etcherfx/sol-trade?include_prereleases&style=for-the-badge)](https://github.com/etcherfx/sol-trade/releases/latest)
+<a href="https://github.com/etcherfx/sol-trade"><img alt="github" height="56" src="https://cdn.jsdelivr.net/npm/@intergrav/devins-badges@3/assets/cozy/available/github_vector.svg"></a>
+<img alt="python" height="56" src="https://cdn.jsdelivr.net/npm/@intergrav/devins-badges@3/assets/cozy/built-with/python_vector.svg">
+
+[![Release](https://img.shields.io/github/v/release/etcherfx/sol-trade?style=for-the-badge)](https://github.com/etcherfx/sol-trade/releases/latest)
+[![License](https://img.shields.io/github/license/etcherfx/sol-trade?style=for-the-badge)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/downloads/)
 
 **Automated trading for Solana.**
 
-A hard fork of [noahtheprogrammer/soltrade](https://github.com/noahtheprogrammer/soltrade).
+[Get started](#-getting-started) · [Releases](https://github.com/etcherfx/sol-trade/releases) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
 
 </div>
 
 > [!WARNING]
 > SolTrade trades **real money** on Solana mainnet. Start with small amounts you can afford to lose, test with a new wallet first, and never risk funds you can't spare. Not financial advice — you are responsible for your own trades.
 
-## Links
+## ✨ Features
 
-- [Releases](https://github.com/etcherfx/sol-trade/releases)
+| Feature | What it does |
+| --- | --- |
+| Technical analysis | EMA, RSI, and Bollinger Bands out of the box — pure Python, no C libraries |
+| Multiple tokens | Trade several tokens in the same loop |
+| Position management | Stop-loss, take-profit, and trailing stop on every position |
+| Custom strategies | Use your own strategy file |
+| Whale tracking | Watches configured wallets for accumulation or dumping |
+| Confluence filter | Sizes every trade from whale activity, market regime, and sentiment |
+| Market regime | Scales positions down in bearish markets *(opt-in)* |
+| Sentiment breaker | Pauses trading when social sentiment crashes *(opt-in)* |
 
-## Quick Start
+## 🚀 Getting started
 
 1. Install [uv](https://docs.astral.sh/uv/):
 
@@ -63,7 +74,32 @@ A hard fork of [noahtheprogrammer/soltrade](https://github.com/noahtheprogrammer
    uv run main.py --dry-run
    ```
 
-## Configuration
+## 📖 Usage
+
+### How it works
+
+SolTrade runs a continuous loop:
+
+1. **Fetch** — the bot retrieves fresh prices and candlesticks for every configured token.
+2. **Analyze** — the active strategy computes indicators (EMA, RSI, and Bollinger Bands by default) and produces `entry` / `exit` signals.
+3. **Act** — buy signals open a position; sell signals, stop-losses, take-profits, and trailing stops close it. Every trade is routed through the Jupiter Swap API.
+4. **Protect** — open positions are tracked and persisted to disk, so a restart resumes where it left off.
+
+Optional layers — whale tracking, a confluence sizing filter, market regime detection, and a sentiment circuit breaker — operate between the signal and the trade. See [Advanced features](#-advanced-features) for details.
+
+### Terminal UI
+
+The bot runs inside a full-screen terminal UI:
+
+| Screen | Key | Shows |
+| --- | --- | --- |
+| Dashboard | `1` | Live wallet balance, portfolio value, profit, and per-token indicators |
+| Logs | `2` | Full log history (scroll with arrow keys, `PgUp`/`PgDn`, `Home`/`End`) |
+| Help | `3` | Keybindings and general info |
+
+`Tab` cycles through the screens; `q` or `Ctrl-C` quits. The bot keeps trading in the background while you browse the UI.
+
+## ⚙️ Configuration
 
 SolTrade reads its configuration from `config.json` and its credentials from the `.env` file, both in the project root. Copy `config.json.sample` to `config.json` and `.env.sample` to `.env` before the first run. Environment variables take precedence over `config.json`.
 
@@ -113,7 +149,7 @@ Secrets live in the git-ignored `.env` file:
 | `regime_data_path` | Where market regime data is stored | `data/regime_data.json` |
 | `sentiment_data_path` | Where sentiment data is stored | `data/sentiment_data.json` |
 
-## Multi-token portfolios
+## 🪙 Multi-token portfolios
 
 Trade several tokens with per-token allocation and strategies. Tokens are **hot-reloadable** — add or remove them in `config.json` and the change applies on the next cycle, no restart.
 
@@ -154,43 +190,7 @@ Both settings hot-reload, but `data_exchange` itself is structural — changing 
 - **Removing** a token with an **open position is refused**: the change is rolled back and an error is logged, because a removed token stops being managed (no stop-loss, take-profit, or trailing stop). Close the position first.
 - When the token set changes, the P&L baseline is recaptured automatically so profit figures stay correct.
 
-## How it works
-
-SolTrade runs a continuous loop:
-
-1. **Fetch** — the bot retrieves fresh prices and candlesticks for every configured token.
-2. **Analyze** — the active strategy computes indicators (EMA, RSI, and Bollinger Bands by default) and produces `entry` / `exit` signals.
-3. **Act** — buy signals open a position; sell signals, stop-losses, take-profits, and trailing stops close it. Every trade is routed through the Jupiter Swap API.
-4. **Protect** — open positions are tracked and persisted to disk, so a restart resumes where it left off.
-
-Optional layers — whale tracking, a confluence sizing filter, market regime detection, and a sentiment circuit breaker — operate between the signal and the trade. See [Advanced features](#advanced-features) for details.
-
-## Terminal UI
-
-The bot runs inside a full-screen terminal UI:
-
-| Screen | Key | Shows |
-| --- | --- | --- |
-| Dashboard | `1` | Live wallet balance, portfolio value, profit, and per-token indicators |
-| Logs | `2` | Full log history (scroll with arrow keys, `PgUp`/`PgDn`, `Home`/`End`) |
-| Help | `3` | Keybindings and general info |
-
-`Tab` cycles through the screens; `q` or `Ctrl-C` quits. The bot keeps trading in the background while you browse the UI.
-
-## Features
-
-| Feature | What it does |
-| --- | --- |
-| Technical analysis | EMA, RSI, and Bollinger Bands out of the box — pure Python, no C libraries |
-| Multiple tokens | Trade several tokens in the same loop |
-| Position management | Stop-loss, take-profit, and trailing stop on every position |
-| Custom strategies | Use your own strategy file |
-| Whale tracking | Watches configured wallets for accumulation or dumping |
-| Confluence filter | Sizes every trade from whale activity, market regime, and sentiment |
-| Market regime | Scales positions down in bearish markets *(opt-in)* |
-| Sentiment breaker | Pauses trading when social sentiment crashes *(opt-in)* |
-
-## Advanced features
+## 🐋 Advanced features
 
 <details>
 <summary><b>How whale tracking, the confluence filter, market regime, and sentiment work</b></summary>
@@ -262,13 +262,13 @@ This feature is enabled by setting `"sentiment_enabled": true` in `config.json`.
 
 </details>
 
-## Custom strategies
+## 🧩 Custom strategies
 
 > [!NOTE]
-> Strategy names must be a single word, lowercase — `momentum`, `trendline`, etc.
+> Strategy names are lowercase, with underscores between words — `momentum`, `mean_reversion`, etc.
 
 1. Create `strategies/{name}_strategy.py`.
-2. Define a class `{Name}Strategy(BaseStrategy)` with the following methods:
+2. Define a class named after the strategy in PascalCase plus `Strategy` (`mean_reversion` → `MeanReversionStrategy`), subclassing `BaseStrategy`, with the following methods:
    - `__init__(self, df)` — store `self.df` and set the risk parameters `stoploss`, `takeprofit`, `trailing_stoploss`, and `trailing_stoploss_target` (percentages).
    - `apply_strategy(self)` — compute indicators, then set `self.df["entry"] = 1` on bars that should buy and `self.df["exit"] = 1` on bars that should sell.
 3. Set `"strategy": "{name}"` in `config.json`.
@@ -315,7 +315,7 @@ class MomentumStrategy(BaseStrategy):
 
 New strategies may be contributed via pull request.
 
-## FAQ
+## ❓ FAQ
 
 **What happens if I stop the bot while I'm holding a position?**
 Your open position is saved to `data/{TOKEN}_data.csv`. On restart, the bot resumes managing its stop-loss and take-profit.
@@ -329,7 +329,7 @@ Yes. Add each token to `secondary_mints` (and its symbol to `secondary_mint_symb
 **Where is my private key stored?**
 Only in the `.env` file on your machine. The bot loads and signs locally — it is never sent to any server, and `.env` is git-ignored.
 
-## Glossary
+## 📘 Glossary
 
 | Term | Meaning |
 | --- | --- |
@@ -340,3 +340,27 @@ Only in the `.env` file on your machine. The bot loads and signs locally — it 
 | Slippage | Difference between expected and executed trade price |
 | BPS | Basis points — 100 BPS = 1% |
 | Whale | A wallet holding a large amount of a token |
+
+## 🧪 Development
+
+Tests run offline against a throwaway config and wallet, so they need no `config.json`, `.env` or funds:
+
+```bash
+uv sync
+uv run pytest
+uv run ruff check .
+```
+
+See [Contributing](CONTRIBUTING.md) for the pull request checklist and [AGENTS.md](AGENTS.md) for a map of the code.
+
+## 🔒 Security
+
+Your private key stays in `.env` on your machine and is only used to sign swaps locally. Report vulnerabilities privately through the repository's [Security tab](https://github.com/etcherfx/sol-trade/security/advisories/new), not in a public issue. See [SECURITY.md](SECURITY.md).
+
+## 📜 License
+
+SolTrade is licensed under the [GNU General Public License v3.0](LICENSE).
+
+## 🙏 Credits
+
+SolTrade is a hard fork of [noahtheprogrammer/soltrade](https://github.com/noahtheprogrammer/soltrade).
