@@ -1,5 +1,8 @@
 """Tests for the strategy layer and signal generation."""
 
+import sys
+import types
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -66,22 +69,23 @@ def test_risk_calculation_uses_own_instance(default_strategy):
     assert "trailing_stoploss" in s.columns
 
 
-def test_resolve_strategy_name_per_token_override(default_strategy):
-    from sol_trade.config import config
-
-    config().token_strategies = {"SOL": "momentum"}
-    try:
-        assert resolve_strategy_name("SOL") == "momentum"  # per-token wins
-        assert resolve_strategy_name("JUP") == "default"  # unlisted -> global
-        assert resolve_strategy_name(None) == "default"
-    finally:
-        config().token_strategies = {}
+def test_resolve_strategy_name_per_token_override(default_strategy, monkeypatch):
+    monkeypatch.setattr(default_strategy, "token_strategies", {"SOL": "momentum"})
+    assert resolve_strategy_name("SOL") == "momentum"  # per-token wins
+    assert resolve_strategy_name("JUP") == "default"  # unlisted -> global
+    assert resolve_strategy_name(None) == "default"
 
 
-def test_load_strategy_class_snake_case_name(default_strategy):
-    # "jup_trend" must map to JupTrendStrategy, not the legacy Jup_trendStrategy.
-    cls = load_strategy_class("jup_trend")
-    assert cls.__name__ == "JupTrendStrategy"
+def test_load_strategy_class_snake_case_name(default_strategy, monkeypatch):
+    # "multi_word" must map to MultiWordStrategy, preferred over the legacy
+    # Multi_wordStrategy spelling when a module defines both.
+    pascal = type("MultiWordStrategy", (), {})
+    legacy = type("Multi_wordStrategy", (), {})
+    module = types.ModuleType("strategies.multi_word_strategy")
+    vars(module).update(MultiWordStrategy=pascal, Multi_wordStrategy=legacy)
+    monkeypatch.setitem(sys.modules, "strategies.multi_word_strategy", module)
+
+    assert load_strategy_class("multi_word") is pascal
 
 
 def test_load_strategy_class_unknown_raises(default_strategy):

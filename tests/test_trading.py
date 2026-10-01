@@ -38,7 +38,7 @@ def test_candles_to_frame_includes_volume():
 def test_pick_indicator_resolves_strategy_column_names():
     import pandas as pd
 
-    # Custom strategy names (jup_trend / jto_trend) — no ema_s/ema_m columns.
+    # Custom strategies may use their own column names — no ema_s/ema_m columns.
     custom = pd.Series({"ema_fast": 1.5, "ema_slow": 2.0, "ema_mid": 1.8})
     assert trading._pick_indicator(custom, "ema_s", "ema_fast") == 1.5
     assert trading._pick_indicator(custom, "ema_m", "ema_mid", "ema_slow") == 1.8
