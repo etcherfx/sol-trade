@@ -11,6 +11,16 @@ def _rent_response(lamports: int):
     return type("R", (), {"value": lamports})()
 
 
+def _fake_rent(lamports: int):
+    """run_async stub that discards the real RPC coroutine and returns a fixed rent."""
+
+    def _run(coro):
+        coro.close()  # never awaited; close it to avoid an unawaited-coroutine warning
+        return _rent_response(lamports)
+
+    return _run
+
+
 @pytest.fixture
 def one_token_config(monkeypatch):
     """Pin the token set to one non-SOL mint plus SOL, independent of config.json."""
@@ -24,7 +34,8 @@ def one_token_config(monkeypatch):
 def test_fallback_when_rpc_down(monkeypatch, one_token_config):
     monkeypatch.setattr(wallet, "token_account_ui_amounts", lambda owner, mint: [1.0])
 
-    def _boom(*args, **kwargs):
+    def _boom(coro):
+        coro.close()
         raise RuntimeError("rpc down")
 
     monkeypatch.setattr(wallet, "run_async", _boom)
@@ -33,7 +44,7 @@ def test_fallback_when_rpc_down(monkeypatch, one_token_config):
 
 def test_only_signature_buffer_when_atas_exist(monkeypatch, one_token_config):
     monkeypatch.setattr(wallet, "token_account_ui_amounts", lambda owner, mint: [1.0])
-    monkeypatch.setattr(wallet, "run_async", lambda coro: _rent_response(2_039_280))
+    monkeypatch.setattr(wallet, "run_async", _fake_rent(2_039_280))
     # No missing ATA -> just the 2-signature fee buffer.
     assert wallet.minimum_sol_needed() == pytest.approx((2 * 5000) / 1e9)
 
@@ -44,7 +55,7 @@ def test_rent_included_when_ata_missing(monkeypatch, one_token_config):
         "token_account_ui_amounts",
         lambda owner, mint: [] if mint != one_token_config.sol_mint else [1.0],
     )
-    monkeypatch.setattr(wallet, "run_async", lambda coro: _rent_response(2_039_280))
+    monkeypatch.setattr(wallet, "run_async", _fake_rent(2_039_280))
     # One missing ATA -> rent-exempt deposit + signature buffer.
     assert wallet.minimum_sol_needed() == pytest.approx((2_039_280 + 2 * 5000) / 1e9)
 
