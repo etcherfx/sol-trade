@@ -32,44 +32,39 @@
 
 ## Getting started
 
-1. Install [uv](https://docs.astral.sh/uv/):
+1. Download the archive for your system from the [latest release](https://github.com/etcherfx/sol-trade/releases/latest) and extract it: `sol-trade-X.Y.Z-windows.zip` on Windows, `sol-trade-X.Y.Z-macos-linux.tar.gz` on macOS and Linux.
 
-   **Windows**
-
-   ```powershell
-   powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-   ```
-
-   **Linux / macOS**
-
-   ```bash
-   curl -LsSf https://astral.sh/uv/install.sh | sh
-   ```
-
-2. Clone the repository and create the configuration file:
-
-   ```bash
-   git clone https://github.com/etcherfx/sol-trade.git
-   cd sol-trade
-   cp config.json.sample config.json
-   ```
+2. Run the launcher in the extracted folder: `run.cmd` on Windows (double-clicking works), `./run.sh` on macOS and Linux. SolTrade runs with [uv](https://docs.astral.sh/uv/), and the launcher offers to install it if it's missing. The first run creates `config.json` and `.env` from the samples and stops.
 
 3. Configure credentials and tokens:
 
-   - Copy `.env.sample` to `.env` and set `SOLTRADE_PRIVATE_KEY` (your Solana wallet).
+   - In `.env`, set `SOLTRADE_PRIVATE_KEY` (your Solana wallet).
    - In `config.json`, set `secondary_mints` / `secondary_mint_symbols` — the token(s) you want to trade.
 
-4. Start the bot:
+4. Paper trade first by running the launcher with `--dry-run`. Swaps are simulated and the wallet is never touched:
 
    ```bash
-   uv run main.py
+   run.cmd --dry-run     # Windows
+   ./run.sh --dry-run    # macOS and Linux
    ```
 
-   Paper trade first — swaps are simulated and the wallet is never touched:
+   Run the launcher without `--dry-run` to trade for real.
 
-   ```bash
-   uv run main.py --dry-run
-   ```
+To update, extract the new release and copy `config.json`, `.env` and the `data/` folder into it.
+
+### Running from source
+
+With [uv](https://docs.astral.sh/uv/) installed:
+
+```bash
+git clone https://github.com/etcherfx/sol-trade.git
+cd sol-trade
+cp config.json.sample config.json
+cp .env.sample .env
+uv run main.py --dry-run
+```
+
+Fill in `config.json` and `.env` as in step 3, and drop `--dry-run` to trade for real.
 
 ## Usage
 
