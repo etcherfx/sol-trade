@@ -92,7 +92,7 @@ jobs:
       - uses: softprops/action-gh-release@v3
         id: release
         with:
-          name: v${{ needs.build.outputs.version }}
+          name: SolTrade v${{ needs.build.outputs.version }}
           body_path: release-notes.md
           files: dist/*
           fail_on_unmatched_files: true
