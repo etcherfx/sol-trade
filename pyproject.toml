@@ -7,11 +7,11 @@ requires-python = ">=3.11"
 dependencies = [
     "ccxt==4.5.85",
     "httpx==0.28.1",
-    "pandas==3.0.5",
+    "pandas==3.0.6",
     "prompt-toolkit==3.0.53",
-    "python-dotenv==1.2.2",
-    "solana==0.40.1",
-    "solders==0.28.0",
+    "python-dotenv==1.2.3",
+    "solana==0.40.3",
+    "solders==0.29.0",
 ]
 
 [dependency-groups]
