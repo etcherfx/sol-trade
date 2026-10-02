@@ -4,16 +4,13 @@
 
 <div align="center">
 
-<a href="https://github.com/etcherfx/sol-trade"><img alt="github" height="56" src="https://cdn.jsdelivr.net/npm/@intergrav/devins-badges@3/assets/cozy/available/github_vector.svg"></a>
 <img alt="python" height="56" src="https://cdn.jsdelivr.net/npm/@intergrav/devins-badges@3/assets/cozy/built-with/python_vector.svg">
 
 [![Release](https://img.shields.io/github/v/release/etcherfx/sol-trade?style=for-the-badge)](https://github.com/etcherfx/sol-trade/releases/latest)
-[![License](https://img.shields.io/github/license/etcherfx/sol-trade?style=for-the-badge)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/downloads/)
 
 **Automated trading for Solana.**
 
-[Get started](#-getting-started) · [Releases](https://github.com/etcherfx/sol-trade/releases) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
+[Get started](#-getting-started)
 
 </div>
 
@@ -352,10 +349,6 @@ uv run ruff check .
 ```
 
 See [Contributing](CONTRIBUTING.md) for the pull request checklist and [AGENTS.md](AGENTS.md) for a map of the code.
-
-## 🔒 Security
-
-Your private key stays in `.env` on your machine and is only used to sign swaps locally. Report vulnerabilities privately through the repository's [Security tab](https://github.com/etcherfx/sol-trade/security/advisories/new), not in a public issue. See [SECURITY.md](SECURITY.md).
 
 ## 📜 License
 
