@@ -34,6 +34,7 @@ uv run pytest          # offline, about a second
 | `sol_trade/log.py`, `utils.py` | Loggers; shared async loop (`run_async`), rate-limit retry, JSON helpers |
 | `strategies/` | `BaseStrategy` and `DefaultStrategy`; users drop their own `{name}_strategy.py` here |
 | `tests/` | pytest suite; `conftest.py` makes it hermetic |
+| `packaging/` | `build.sh VERSION` writes the release archives to `dist/` (needs git, tar and zip; the release workflow runs it); `run.sh`, `run.ps1` and `run.cmd` are the launchers shipped in them. A new runtime file or folder must be added to the list in `build.sh` |
 
 ## Constraints and conventions
 

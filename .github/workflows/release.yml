@@ -1,6 +1,6 @@
-# Pushing a vX.Y.Z tag checks it against pyproject.toml, runs the tests and lint, and
-# publishes a GitHub Release with .github/release-notes/vX.Y.Z.md as its body. SolTrade
-# runs from source, so the release attaches no files.
+# Pushing a vX.Y.Z tag checks it against pyproject.toml, runs the tests and lint, builds one
+# archive per OS with packaging/build.sh, and publishes them in a GitHub Release with
+# .github/release-notes/vX.Y.Z.md as its body.
 name: Release
 
 on:
@@ -49,6 +49,11 @@ jobs:
       - name: Test
         run: uv run pytest
 
+      - name: Build the archives
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: bash packaging/build.sh "$VERSION"
+
       - name: Release notes + Full Changelog link
         shell: bash
         env:
@@ -67,8 +72,10 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: notes
-          path: release-notes.md
+          name: dist
+          path: |
+            dist/
+            release-notes.md
 
   publish:
     needs: build
@@ -79,14 +86,16 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: notes
-      # Create as a draft, then publish: the repo has immutable releases, which lock a
-      # release when it's published.
+          name: dist
+      # Create as a draft, attach the files, then publish: the repo has immutable releases,
+      # which lock a release when it's published.
       - uses: softprops/action-gh-release@v3
         id: release
         with:
           name: v${{ needs.build.outputs.version }}
           body_path: release-notes.md
+          files: dist/*
+          fail_on_unmatched_files: true
           prerelease: ${{ contains(github.ref_name, '-') }}
           draft: true
 

@@ -37,7 +37,7 @@ Maintainers only. Releases are tag-driven:
    git push origin main vX.Y.Z
    ```
 
-The release workflow checks that the tag matches `pyproject.toml`, runs the lint and tests, and publishes the notes with a Full Changelog link. To check the release before tagging, push the release commit, then run the Release workflow by hand from the Actions tab; it does everything except publish.
+The release workflow checks that the tag matches `pyproject.toml`, runs the lint and tests, builds a Windows and a macOS/Linux archive with `packaging/build.sh`, and publishes them with the notes and a Full Changelog link. To check the release before tagging, push the release commit, then run the Release workflow by hand from the Actions tab; it does everything except publish.
 
 ## Licensing
 

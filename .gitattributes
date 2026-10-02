@@ -1,2 +1,7 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Launchers keep the line endings their OS needs, wherever they're checked out
+*.sh text eol=lf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
