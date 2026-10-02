@@ -1,0 +1,97 @@
+# Pushing a vX.Y.Z tag checks it against pyproject.toml, runs the tests and lint, and
+# publishes a GitHub Release with .github/release-notes/vX.Y.Z.md as its body. SolTrade
+# runs from source, so the release attaches no files.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Check and assemble the notes without publishing
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # tags, for the Full Changelog link
+
+      - uses: astral-sh/setup-uv@v10.2.0 # no moving major tag upstream
+
+      - name: Read version and check the tag
+        id: version
+        shell: bash
+        run: |
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]] \
+            || { echo "::error::'$version' is not SemVer"; exit 1; }
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match version $version"; exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install
+        run: uv sync --locked
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Test
+        run: uv run pytest
+
+      - name: Release notes + Full Changelog link
+        shell: bash
+        env:
+          TAG: v${{ steps.version.outputs.version }}
+        run: |
+          notes=".github/release-notes/$TAG.md"
+          [[ -f "$notes" ]] || { echo "::error::missing $notes"; exit 1; }
+          ref="$TAG"; git rev-parse -q --verify "refs/tags/$TAG" >/dev/null || ref=HEAD   # dry run before tagging
+          # previous version tag in history; a stable release skips pre-releases (tags with "-")
+          stable=(); [[ "$TAG" == *-* ]] || stable=(--exclude '*-*')
+          prev="$(git describe --tags --abbrev=0 --match 'v[0-9]*' --match '[0-9]*' --exclude "$TAG" "${stable[@]}" "$ref" 2>/dev/null || true)"
+          base="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          if [[ -n "$prev" ]]; then link="$base/compare/$prev...$TAG"; else link="$base/commits/$TAG"; fi
+          { cat "$notes"; printf '\n**Full Changelog**: %s\n' "$link"; } > release-notes.md
+          cat release-notes.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: notes
+          path: release-notes.md
+
+  publish:
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: notes
+      # Create as a draft, then publish: the repo has immutable releases, which lock a
+      # release when it's published.
+      - uses: softprops/action-gh-release@v3
+        id: release
+        with:
+          name: v${{ needs.build.outputs.version }}
+          body_path: release-notes.md
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          draft: true
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ steps.release.outputs.id }}
+        run: gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" -F draft=false --jq .html_url

@@ -24,6 +24,21 @@ The pull request template asks for the why, what you verified and any screenshot
 
 Commits follow [Conventional Commits](https://www.conventionalcommits.org/) (`type(scope): description`) and carry a [DCO](https://developercertificate.org/) sign-off, added with `git commit -s`.
 
+## Releasing
+
+Maintainers only. Releases are tag-driven:
+
+1. Bump `version` in `pyproject.toml` and run `uv lock`, which records it too.
+2. Write `.github/release-notes/vX.Y.Z.md`: short user-facing bullets, `- **Topic:** One sentence.` The release fails without it.
+3. Commit as `chore(release): vX.Y.Z`, then tag and push:
+
+   ```bash
+   git tag -a vX.Y.Z -m vX.Y.Z
+   git push origin main vX.Y.Z
+   ```
+
+The release workflow checks that the tag matches `pyproject.toml`, runs the lint and tests, and publishes the notes with a Full Changelog link. To check the release before tagging, push the release commit, then run the Release workflow by hand from the Actions tab; it does everything except publish.
+
 ## Licensing
 
 SolTrade is licensed under the [GNU General Public License v3.0](LICENSE). By contributing, you agree that your contributions are licensed under the same terms.

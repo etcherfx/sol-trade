@@ -14,7 +14,7 @@ uv run pytest          # offline, about a second
 
 - Tests are hermetic: `tests/conftest.py` installs a throwaway config and keypair, points the RPC at a dead local address, clears `SOLTRADE_*` variables and runs from a temporary directory. They never read `config.json` or `.env` and need no network or funds.
 - `ruff format` is not enforced; many files are not formatted with it, so don't reformat untouched code.
-- There is no CI. Run both checks yourself before calling a change done.
+- There is no CI for pushes or pull requests. Run both checks yourself before calling a change done. `.github/workflows/release.yml` runs them again on a version tag, before it publishes the release.
 - Manual smoke test: `uv run main.py --dry-run` (paper trading). It still needs a valid `SOLTRADE_PRIVATE_KEY` in `.env` and live RPC/exchange access.
 
 ## Code map
