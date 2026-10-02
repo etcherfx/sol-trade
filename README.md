@@ -10,14 +10,14 @@
 
 **A Solana trading bot that runs your strategies and swaps through Jupiter.**
 
-[Get started](#-getting-started) · [Configuration](#️-configuration) · [Multi-token portfolios](#-multi-token-portfolios) · [Custom strategies](#-custom-strategies) · [FAQ](#-faq)
+[Get started](#getting-started) · [Configuration](#configuration) · [Multi-token portfolios](#multi-token-portfolios) · [Custom strategies](#custom-strategies) · [FAQ](#faq)
 
 </div>
 
 > [!WARNING]
 > SolTrade trades **real money** on Solana mainnet. Start with small amounts you can afford to lose, test with a new wallet first, and never risk funds you can't spare. Not financial advice — you are responsible for your own trades.
 
-## ✨ Features
+## Features
 
 | Feature | What it does |
 | --- | --- |
@@ -30,7 +30,7 @@
 | Market regime | Scales positions down in bearish markets *(opt-in)* |
 | Sentiment breaker | Pauses trading when social sentiment crashes *(opt-in)* |
 
-## 🚀 Getting started
+## Getting started
 
 1. Install [uv](https://docs.astral.sh/uv/):
 
@@ -71,7 +71,7 @@
    uv run main.py --dry-run
    ```
 
-## 📖 Usage
+## Usage
 
 ### How it works
 
@@ -82,7 +82,7 @@ SolTrade runs a continuous loop:
 3. **Act** — buy signals open a position; sell signals, stop-losses, take-profits, and trailing stops close it. Every trade is routed through the Jupiter Swap API.
 4. **Protect** — open positions are tracked and persisted to disk, so a restart resumes where it left off.
 
-Optional layers — whale tracking, a confluence sizing filter, market regime detection, and a sentiment circuit breaker — operate between the signal and the trade. See [Advanced features](#-advanced-features) for details.
+Optional layers — whale tracking, a confluence sizing filter, market regime detection, and a sentiment circuit breaker — operate between the signal and the trade. See [Advanced features](#advanced-features) for details.
 
 ### Terminal UI
 
@@ -96,7 +96,7 @@ The bot runs inside a full-screen terminal UI:
 
 `Tab` cycles through the screens; `q` or `Ctrl-C` quits. The bot keeps trading in the background while you browse the UI.
 
-## ⚙️ Configuration
+## Configuration
 
 SolTrade reads its configuration from `config.json` and its credentials from the `.env` file, both in the project root. Copy `config.json.sample` to `config.json` and `.env.sample` to `.env` before the first run. Environment variables take precedence over `config.json`.
 
@@ -146,7 +146,7 @@ Secrets live in the git-ignored `.env` file:
 | `regime_data_path` | Where market regime data is stored | `data/regime_data.json` |
 | `sentiment_data_path` | Where sentiment data is stored | `data/sentiment_data.json` |
 
-## 🪙 Multi-token portfolios
+## Multi-token portfolios
 
 Trade several tokens with per-token allocation and strategies. Tokens are **hot-reloadable** — add or remove them in `config.json` and the change applies on the next cycle, no restart.
 
@@ -187,7 +187,7 @@ Both settings hot-reload, but `data_exchange` itself is structural — changing 
 - **Removing** a token with an **open position is refused**: the change is rolled back and an error is logged, because a removed token stops being managed (no stop-loss, take-profit, or trailing stop). Close the position first.
 - When the token set changes, the P&L baseline is recaptured automatically so profit figures stay correct.
 
-## 🐋 Advanced features
+## Advanced features
 
 <details>
 <summary><b>How whale tracking, the confluence filter, market regime, and sentiment work</b></summary>
@@ -259,7 +259,7 @@ This feature is enabled by setting `"sentiment_enabled": true` in `config.json`.
 
 </details>
 
-## 🧩 Custom strategies
+## Custom strategies
 
 > [!NOTE]
 > Strategy names are lowercase, with underscores between words — `momentum`, `mean_reversion`, etc.
@@ -312,7 +312,7 @@ class MomentumStrategy(BaseStrategy):
 
 New strategies may be contributed via pull request.
 
-## ❓ FAQ
+## FAQ
 
 **What happens if I stop the bot while I'm holding a position?**
 Your open position is saved to `data/{TOKEN}_data.csv`. On restart, the bot resumes managing its stop-loss and take-profit.
@@ -326,7 +326,7 @@ Yes. Add each token to `secondary_mints` (and its symbol to `secondary_mint_symb
 **Where is my private key stored?**
 Only in the `.env` file on your machine. The bot loads and signs locally — it is never sent to any server, and `.env` is git-ignored.
 
-## 📘 Glossary
+## Glossary
 
 | Term | Meaning |
 | --- | --- |
@@ -338,7 +338,7 @@ Only in the `.env` file on your machine. The bot loads and signs locally — it 
 | BPS | Basis points — 100 BPS = 1% |
 | Whale | A wallet holding a large amount of a token |
 
-## 🧪 Development
+## Development
 
 Tests run offline against a throwaway config and wallet, so they need no `config.json`, `.env` or funds:
 
@@ -350,10 +350,10 @@ uv run ruff check .
 
 See [Contributing](CONTRIBUTING.md) for the pull request checklist and [AGENTS.md](AGENTS.md) for a map of the code.
 
-## 📜 License
+## License
 
 SolTrade is licensed under the [GNU General Public License v3.0](LICENSE).
 
-## 🙏 Credits
+## Credits
 
 SolTrade is a hard fork of [noahtheprogrammer/soltrade](https://github.com/noahtheprogrammer/soltrade).

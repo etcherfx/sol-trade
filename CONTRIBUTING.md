@@ -12,7 +12,7 @@ Report security problems privately as described in [SECURITY.md](SECURITY.md), n
 
 ## Development
 
-Setup and checks are in the README's [Development](README.md#-development) section, and both checks must pass before you open a pull request. [AGENTS.md](AGENTS.md) maps the code and its invariants. To try a change by hand, use the paper-trading mode from [Getting started](README.md#-getting-started).
+Setup and checks are in the README's [Development](README.md#development) section, and both checks must pass before you open a pull request. [AGENTS.md](AGENTS.md) maps the code and its invariants. To try a change by hand, use the paper-trading mode from [Getting started](README.md#getting-started).
 
 ## Pull requests
 
@@ -20,7 +20,7 @@ The pull request template asks for the why, what you verified and any screenshot
 
 - Keep each pull request to one change.
 - Add or update tests for trading, strategy, config or wallet logic.
-- New strategies go in `strategies/{name}_strategy.py` and follow the README's [Custom strategies](README.md#-custom-strategies) rules.
+- New strategies go in `strategies/{name}_strategy.py` and follow the README's [Custom strategies](README.md#custom-strategies) rules.
 
 Commits follow [Conventional Commits](https://www.conventionalcommits.org/) (`type(scope): description`) and carry a [DCO](https://developercertificate.org/) sign-off, added with `git commit -s`.
 
