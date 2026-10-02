@@ -1,6 +1,17 @@
-# Starts SolTrade from this folder: installs uv if it's missing (after asking), creates the
-# config files on the first run, then runs the bot. Arguments (e.g. --dry-run) are passed on.
-# Exits 2 after creating the config files, so run.cmd keeps the window open to show why.
+# Starts the project from this folder: installs uv if it's missing (after asking), creates the
+# config files on the first run, then runs it with the locked dependencies. Arguments are
+# passed on. Exits 2 after creating the config files, so run.cmd keeps the window open to
+# show why.
+
+# --- project settings ---------------------------------------------------------
+$Project = 'SolTrade'
+# Sample file = file it's copied to on the first run.
+$Configs = [ordered]@{ 'config.json.sample' = 'config.json'; '.env.sample' = '.env' }
+# Shown after the first run creates the config files.
+$FirstRunHint = "Set SOLTRADE_PRIVATE_KEY in .env and the tokens to trade (secondary_mints) in config.json, then run this again. See the README's Getting started."
+$Entry = 'main.py'
+# -----------------------------------------------------------------------------
+
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
 
@@ -16,7 +27,7 @@ function Find-Uv {
 }
 
 if (-not (Find-Uv)) {
-    Write-Host 'SolTrade runs with uv (https://docs.astral.sh/uv/), which is not installed.'
+    Write-Host "$Project runs with uv (https://docs.astral.sh/uv/), which is not installed."
     $answer = Read-Host 'Install it now with the official installer? [y/N]'
     if ($answer -notmatch '^(y|yes)$') {
         Write-Host 'uv is required. Install it from https://docs.astral.sh/uv/ and run this again.'
@@ -31,17 +42,17 @@ if (-not (Find-Uv)) {
 }
 
 $created = @()
-foreach ($file in 'config.json', '.env') {
-    if (-not (Test-Path -LiteralPath $file)) {
-        Copy-Item -LiteralPath "$file.sample" -Destination $file
-        $created += $file
+foreach ($sample in $Configs.Keys) {
+    $target = $Configs[$sample]
+    if (-not (Test-Path -LiteralPath $target)) {
+        Copy-Item -LiteralPath $sample -Destination $target
+        $created += $target
     }
 }
 if ($created.Count -gt 0) {
-    Write-Host "Created $($created -join ' and ') from the samples. Set SOLTRADE_PRIVATE_KEY in .env and the tokens to trade"
-    Write-Host "(secondary_mints) in config.json, then run this again. See the README's Getting started."
+    Write-Host "Created $($created -join ' and ') from the samples. $FirstRunHint"
     exit 2
 }
 
-& uv run --frozen main.py @args
+& uv run --frozen $Entry @args
 exit $LASTEXITCODE

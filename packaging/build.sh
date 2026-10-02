@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
-# Builds the release archives in dist/: one per OS, holding only what SolTrade needs to run
+# Builds the release archives in dist/: one per OS, holding only what the project needs to run
 # (committed files at HEAD) plus that OS's launcher. Needs git, tar and zip.
 # Usage: packaging/build.sh VERSION
-set -euo pipefail
 
+# --- project settings ---------------------------------------------------------
+# The repo name; each archive and the folder inside it are named NAME-VERSION.
+repo_name=sol-trade
+# Committed runtime files and folders: code, manifest, lockfile, version pins, sample config
+# files, README and LICENSE. No tests, .github/, AGENTS.md or dev tooling.
+files=(main.py sol_trade strategies pyproject.toml uv.lock .python-version config.json.sample .env.sample README.md LICENSE)
+# -----------------------------------------------------------------------------
+
+set -euo pipefail
 version="${1:?usage: packaging/build.sh VERSION}"
 cd "$(dirname "$0")/.."
-name="sol-trade-$version"
-files=(main.py sol_trade strategies pyproject.toml uv.lock .python-version config.json.sample .env.sample README.md LICENSE)
+name="$repo_name-$version"
 
 rm -rf dist
 for os in windows macos-linux; do
