@@ -1,7 +1,7 @@
 [project]
 name = "sol-trade"
 version = "2.0.0"
-description = "A Solana trading bot with lots of features."
+description = "Automated trading for Solana."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
