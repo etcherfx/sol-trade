@@ -8,9 +8,9 @@
 
 [![Release](https://img.shields.io/github/v/release/etcherfx/sol-trade?style=for-the-badge)](https://github.com/etcherfx/sol-trade/releases/latest)
 
-**Automated trading for Solana.**
+**A Solana trading bot that runs your strategies and swaps through Jupiter.**
 
-[Get started](#-getting-started)
+[Get started](#-getting-started) · [Configuration](#️-configuration) · [Multi-token portfolios](#-multi-token-portfolios) · [Custom strategies](#-custom-strategies) · [FAQ](#-faq)
 
 </div>
 
