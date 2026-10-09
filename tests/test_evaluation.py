@@ -273,3 +273,12 @@ def test_a_loss_on_too_few_trades_is_insufficient(monkeypatch):
     assert result["metrics"]["total_return_pct"] < 0
     assert result["gates"][0]["value"] < result["required_trades"]
     assert result["verdict"] == evaluation.INSUFFICIENT
+
+
+def test_a_proxy_quote_is_flagged(strategy, monkeypatch):
+    monkeypatch.setattr(config(), "token_exchanges", {"TKN": {"exchange": "okx", "quote": "USDT"}})
+    result = evaluation.evaluate(strategy, "TKN", _market(), FREE)
+    assert evaluation.PRICE_PROXY in result["flags"]
+    assert result["data"]["source"] == {"exchange": "okx", "pair": "TKN/USDT", "price_proxy": True}
+    plain = evaluation.evaluate(strategy, "OTHER", _market(), FREE)
+    assert evaluation.PRICE_PROXY not in plain["flags"]

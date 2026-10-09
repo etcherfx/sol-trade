@@ -303,3 +303,16 @@ def test_symbol_and_mint_lookups(tmp_path):
     assert c.mint_for_symbol("ZZZ") is None
     assert c.symbol_for_mint("MINT_B") == "BBB"
     assert c.symbol_for_mint("UNKNOWN") is None
+
+
+def test_token_exchanges_take_an_exchange_and_quote(tmp_path):
+    import os
+
+    from sol_trade.config import Config
+
+    sources = {"JUP": {"exchange": "okx", "quote": "USDT"}, "WIF": {"quote": "USDT"}, "SOL": "coinbase"}
+    c = Config(config_path=_write(tmp_path, {**_PRIMARY, "token_exchanges": sources}), dotenv_path=os.devnull)
+    assert c.token_exchanges == sources
+    for bad in ({"exchange": ""}, {"exchange": "okx", "pair": "JUP/USDT"}, ["okx"], {"quote": 1}):
+        with pytest.raises(ValueError, match="token_exchanges.JUP"):
+            Config(config_path=_write(tmp_path, {**_PRIMARY, "token_exchanges": {"JUP": bad}}), dotenv_path=os.devnull)

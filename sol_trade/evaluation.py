@@ -32,6 +32,7 @@ INSUFFICIENT = "INSUFFICIENT_EVIDENCE"
 COSTS_DEFAULT = "COSTS_DEFAULT"
 COSTS_STALE = "COSTS_STALE"
 DATA_GAPS = "DATA_GAPS"
+PRICE_PROXY = "PRICE_PROXY"  # candles quoted in another token than the one swaps pay with
 
 _EULER_GAMMA = 0.5772156649015329
 _NORMAL = NormalDist()
@@ -169,10 +170,11 @@ def _iso(ts: int | None) -> str | None:
     return history._iso(ts)
 
 
-def _data_info(frame: pd.DataFrame, strategy: Strategy, cut: Split) -> dict[str, Any]:
+def _data_info(frame: pd.DataFrame, strategy: Strategy, cut: Split, symbol: str) -> dict[str, Any]:
     selection = frame.iloc[cut.start : cut.holdout_start]
     ts = frame["ts"]
     return {
+        "source": history.source_for(symbol).as_dict(),
         "timeframe": strategy.timeframe,
         "bars": len(frame),
         "first": _iso(int(ts.iat[0])) if len(frame) else None,
@@ -196,7 +198,7 @@ def _cost_flags(model: CostModel, symbol: str) -> list[str]:
 
 
 def load_frame(strategy: Strategy, symbol: str) -> pd.DataFrame:
-    return history.load_bars(history.pair_for(symbol), strategy.timeframe)
+    return history.load_bars(history.source_for(symbol).pair, strategy.timeframe)
 
 
 def evaluate(
@@ -217,8 +219,10 @@ def evaluate(
     frame = load_frame(strategy, symbol) if frame is None else frame
     model = model or costs.model_for(symbol)
     cut = split(frame, strategy)
-    data = _data_info(frame, strategy, cut)
+    data = _data_info(frame, strategy, cut, symbol)
     flags = _cost_flags(model, symbol)
+    if history.source_for(symbol).proxy:
+        flags.append(PRICE_PROXY)
     result: dict[str, Any] = {
         "strategy": strategy.name,
         "hash": strategy.hash,

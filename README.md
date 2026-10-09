@@ -165,7 +165,7 @@ Secrets live in the git-ignored `.env` file:
 | `strategies_path` | Folder of JSON strategies | `strategies` |
 | `secondary_weights` | Portfolio weight per token (parallel to `secondary_mints`); empty = equal split | `[]` |
 | `token_strategies` | Per-token strategy overrides, e.g. `{"SOL": "default", "JUP": "momentum"}` | `{}` |
-| `token_exchanges` | Per-token candle-data exchange overrides, e.g. `{"POPCAT": "mexc"}`; missing = `data_exchange` | `{}` |
+| `token_exchanges` | Per-token candle sources: an exchange id, e.g. `{"POPCAT": "mexc"}`, or an exchange and quote, e.g. `{"JUP": {"exchange": "okx", "quote": "USDT"}}`; missing = `data_exchange` and the primary token | `{}` |
 | `data_exchange` | Exchange used for candlestick data (via ccxt) | `okx` |
 | `candles_path` | Local SQLite store for candlestick history | `data/candles.db` |
 | `research_db_path` | Positions, trades, trials and the pipeline | `data/research.db` |
@@ -249,6 +249,14 @@ A buy deploys at most `weight × total_capital`, so each token gets its slice in
 "data_exchange": "okx",
 "token_exchanges": { "POPCAT": "mexc" }
 ```
+
+An entry can also name the quote token of the candle pair, for when the pair in your primary token is young or missing but another quote has years of history. Leave out `exchange` to keep `data_exchange`:
+
+```json
+"token_exchanges": { "JUP": { "exchange": "okx", "quote": "USDT" } }
+```
+
+Backfills, backtests, paper books and the live loop all read the same configured series, so research and live trading see the same bars. Swaps still trade the token against the primary mint through Jupiter. A different quote is a **price proxy**: JUP/USDT stands in for JUP/USDC, which holds only while the two quotes trade at par, so `backtest` flags those results `PRICE_PROXY`. Costs come from Jupiter quotes in the primary token either way.
 
 Both settings hot-reload, but `data_exchange` itself is structural — changing it still requires a restart. Each exchange client is created once and reused; candle history is keyed by symbol, so switching a token's exchange starts fresh data for it.
 

@@ -60,12 +60,48 @@ class SeriesReport:
         return dict(self.__dict__)
 
 
+@dataclass(frozen=True)
+class Source:
+    """Where a token's candles come from: ``base/quote`` on a ccxt exchange."""
+
+    exchange: str
+    base: str
+    quote: str
+
+    @property
+    def pair(self) -> str:
+        return f"{self.base}/{self.quote}"
+
+    @property
+    def proxy(self) -> bool:
+        """The quote isn't the primary token: its price stands in for the one swaps get."""
+        return self.quote != config().primary_mint_symbol
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"exchange": self.exchange, "pair": self.pair, "price_proxy": self.proxy}
+
+
+def source_for(symbol: str) -> Source:
+    """The token's candle source: ``token_exchanges[symbol]`` over ``data_exchange`` and the primary token.
+
+    An entry is an exchange id, or ``{"exchange": ..., "quote": ...}`` with
+    either key optional. Backfills, backtests, paper books and the live loop
+    all read this one series; swaps still trade against the primary mint.
+    """
+    cfg = config()
+    entry = cfg.token_exchanges.get(symbol)
+    exchange, quote = cfg.data_exchange, cfg.primary_mint_symbol
+    if isinstance(entry, str) and entry:
+        exchange = entry
+    elif isinstance(entry, dict):
+        exchange = entry.get("exchange") or exchange
+        quote = entry.get("quote") or quote
+    return Source(exchange, symbol, quote)
+
+
 def pair_for(symbol: str) -> str:
-    return f"{symbol}/{config().primary_mint_symbol}"
+    return source_for(symbol).pair
 
-
-def exchange_id_for(symbol: str) -> str:
-    return config().token_exchanges.get(symbol) or config().data_exchange
 
 
 def _iso(ts: int | None) -> str | None:
@@ -268,16 +304,15 @@ def update(
     now: float | None = None,
     validate: bool = True,
 ) -> tuple[SeriesReport, Bar | None]:
-    """Fetch new closed bars for ``symbol`` (quoted in the primary token) into the store.
+    """Fetch new closed bars for ``symbol`` (from :func:`source_for`) into the store.
 
     Starts two bars before the newest stored bar. ``days`` (a backfill) also
     fetches any older history missing from the window; ``min_bars`` makes
     sure at least that many closed bars are stored. Returns the report and
     the forming bar when the exchange returned it.
     """
-    return update_pair(
-        pair_for(symbol), exchange_id_for(symbol), timeframe, days, min_bars, now, validate
-    )
+    source = source_for(symbol)
+    return update_pair(source.pair, source.exchange, timeframe, days, min_bars, now, validate)
 
 
 def update_pair(
@@ -340,7 +375,8 @@ def backfill(
                 reports.append(report.as_dict())
             except Exception as e:  # noqa: BLE001 - report and continue with the rest
                 log_general.warning(f"backfill {symbol} {timeframe} failed: {e}")
-                failed = SeriesReport(pair_for(symbol), timeframe, exchange_id_for(symbol))
+                source = source_for(symbol)
+                failed = SeriesReport(source.pair, timeframe, source.exchange)
                 failed.errors.append(f"{type(e).__name__}: {e}")
                 reports.append(failed.as_dict())
     return reports
@@ -362,7 +398,8 @@ def window(symbol: str, timeframe: str, lookback: int, now: float | None = None)
     On exchange errors the stored bars are used when the newest one is at
     most three periods old; otherwise ``ConnectionError`` is raised.
     """
-    return window_pair(pair_for(symbol), exchange_id_for(symbol), timeframe, lookback, now)
+    source = source_for(symbol)
+    return window_pair(source.pair, source.exchange, timeframe, lookback, now)
 
 
 def window_pair(

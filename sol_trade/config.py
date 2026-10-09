@@ -159,9 +159,9 @@ class Config:
         self.secondary_weights: list[float] = []
         # Per-token strategy overrides, keyed by symbol; missing -> global strategy.
         self.token_strategies: dict[str, str] = {}
-        # Per-token candle-data exchange overrides, keyed by symbol; missing ->
-        # the global data_exchange.
-        self.token_exchanges: dict[str, str] = {}
+        # Per-token candle sources, keyed by symbol: an exchange id, or
+        # {"exchange": ..., "quote": ...}; missing -> data_exchange and the primary token.
+        self.token_exchanges: dict[str, str | dict[str, str]] = {}
         # Known mints by symbol beyond the traded set, for lookups and candidates.
         self.token_mints: dict[str, str] = {}
         self.price_update_seconds: int = 60
@@ -378,9 +378,21 @@ class Config:
             log_general.warning(
                 f"token_strategies references unknown token(s): {unknown_strategies}"
             )
+        for symbol, entry in self.token_exchanges.items():
+            if isinstance(entry, str) and entry:
+                continue
+            if (
+                not isinstance(entry, dict)
+                or set(entry) - {"exchange", "quote"}
+                or not all(isinstance(v, str) and v for v in entry.values())
+            ):
+                raise ValueError(
+                    f"token_exchanges.{symbol} must be an exchange id or "
+                    '{"exchange": "<ccxt id>", "quote": "<symbol>"} with non-empty strings'
+                )
         unknown_exchanges = [
             symbol for symbol in self.token_exchanges
-            if symbol not in self.secondary_mint_symbols
+            if symbol not in self.secondary_mint_symbols and symbol not in self.token_mints
         ]
         if unknown_exchanges:
             log_general.warning(

@@ -143,3 +143,30 @@ def test_backfill_defaults_to_the_configured_days(market, monkeypatch):
     monkeypatch.setitem(config().backfill, "default_days", 3)
     report = history.backfill(["TKN"], ["1h"], now=clock["now"])[0]
     assert report["total"] == 72
+
+
+def test_a_token_can_take_its_candles_from_another_quote_and_exchange(market, monkeypatch):
+    """E.g. JUP from OKX's JUP/USDT, which goes back years, while swaps still pay in USDC."""
+    exchange, clock = market
+    asked = []
+    monkeypatch.setattr(data_source, "get_exchange", lambda exchange_id=None: asked.append(exchange_id) or exchange)
+    monkeypatch.setattr(config(), "token_exchanges", {"TKN": {"exchange": "other", "quote": "USDT"}})
+    clock["now"] = exchange.t0 + 250 * PERIOD + 600
+
+    report = history.backfill(["TKN"], ["1h"], days=3, now=clock["now"])[0]
+    frame, _ = history.window("TKN", "1h", 30, now=clock["now"])
+
+    source = history.source_for("TKN")
+    assert (source.exchange, source.pair, source.proxy) == ("other", "TKN/USDT", True)
+    assert (report["pair"], report["exchange"], report["total"]) == ("TKN/USDT", "other", 72)
+    assert set(asked) == {"other"}
+    assert {call[0] for call in exchange.calls} == {"TKN/USDT"}
+    assert len(frame) == 30
+    assert history.load_bars("TKN/QUOTE", "1h").empty  # nothing under the primary pair
+
+
+def test_the_default_source_is_the_primary_pair_on_the_data_exchange(market, monkeypatch):
+    monkeypatch.setattr(config(), "token_exchanges", {"TKN": "mexc"})
+    assert history.source_for("TKN") == history.Source("mexc", "TKN", "QUOTE")
+    assert not history.source_for("TKN").proxy
+    assert history.source_for("OTHER") == history.Source(config().data_exchange, "OTHER", "QUOTE")
