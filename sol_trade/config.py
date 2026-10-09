@@ -72,6 +72,20 @@ SECTION_DEFAULTS: dict[str, dict[str, Any]] = {
         # Bars requested per exchange call.
         "page_limit": 100,
     },
+    "gates": {
+        # The newest days of history, held out until a strategy is promoted.
+        "holdout_days": 60,
+        # Sequential folds the selection period's equity curve is split into.
+        "folds": 4,
+        "min_positive_folds": 3,
+        # Fewer trades than this is insufficient evidence, not a pass.
+        "min_trades": 30,
+        # Probability that the Sharpe ratio beats the best of N random trials.
+        "min_deflated_sharpe": 0.95,
+        "holdout_min_trades": 8,
+        # Share of missing bars above which the data is flagged DATA_GAPS.
+        "max_gap_fraction": 0.02,
+    },
 }
 
 
@@ -169,6 +183,7 @@ class Config:
     sentiment: dict[str, Any]
     costs: dict[str, Any]
     backfill: dict[str, Any]
+    gates: dict[str, Any]
 
     def _apply_config_file(self) -> None:
         default_config: dict[str, Any] = {

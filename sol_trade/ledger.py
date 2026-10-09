@@ -73,6 +73,22 @@ CREATE TABLE IF NOT EXISTS trades (
     reason TEXT,
     created_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS trials (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    strategy TEXT NOT NULL,
+    strategy_hash TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    sharpe REAL NOT NULL,
+    bars INTEGER NOT NULL,
+    trades INTEGER NOT NULL,
+    verdict TEXT NOT NULL,
+    first_ts INTEGER,
+    last_ts INTEGER,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    UNIQUE (strategy_hash, symbol, timeframe)
+);
 CREATE INDEX IF NOT EXISTS fills_book ON fills (book, symbol, ts);
 CREATE INDEX IF NOT EXISTS trades_book ON trades (book, symbol, exit_ts);
 """

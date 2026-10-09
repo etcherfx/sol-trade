@@ -31,6 +31,29 @@
     "sol_reserve_ttl_seconds": 3600
   },
 
+  "costs": {
+    "default_cost_bps": 50,
+    "safety_multiplier": 1.25,
+    "probe_sizes_usd": [25, 100, 250],
+    "max_sample_age_days": 14
+  },
+
+  "backfill": {
+    "default_timeframes": ["1h"],
+    "default_days": 730,
+    "page_limit": 100
+  },
+
+  "gates": {
+    "holdout_days": 60,
+    "folds": 4,
+    "min_positive_folds": 3,
+    "min_trades": 30,
+    "min_deflated_sharpe": 0.95,
+    "holdout_min_trades": 8,
+    "max_gap_fraction": 0.02
+  },
+
   "whale_tracking_enabled": false,
   "whale_wallets": {},
   "whale_poll_interval_minutes": 5,
