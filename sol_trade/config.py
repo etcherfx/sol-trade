@@ -53,8 +53,15 @@ SECTION_DEFAULTS: dict[str, dict[str, Any]] = {
         "sol_reserve_ttl_seconds": 3600,
     },
     "sentiment": {
-        # Subreddits the sentiment layer reads; empty means nothing is read.
+        # Subreddits the recorder reads (new posts and comments); empty means nothing is read.
         "subreddits": [],
+        "record": True,
+        # Reddit allows anonymous feed readers about one request a minute.
+        "request_interval_seconds": 65,
+        "user_agent": "sol-trade sentiment recorder (github.com/etcherfx/sol-trade; one request a minute)",
+        # Words that count as a mention, per symbol; the symbol itself by default.
+        "keywords": {},
+        "db_path": "data/sentiment.db",
     },
     "costs": {
         # Per-side cost assumed for tokens without measured quotes.

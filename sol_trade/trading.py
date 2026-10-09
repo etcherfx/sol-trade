@@ -20,7 +20,7 @@ from typing import Any
 
 import numpy as np
 
-from sol_trade import backtest, costs, history, ledger, promotion
+from sol_trade import backtest, costs, heartbeat, history, ledger, promotion, sentiment
 from sol_trade.config import config
 from sol_trade.engine import BUY, DUST, SELL, Book, Fill, SimExecutor
 from sol_trade.jupiter import fetch_prices
@@ -308,6 +308,7 @@ def run_symbol(
         {c: frame[c].to_numpy(dtype=float)[-strategy.lookback :, None] for c in ("open", "high", "low", "close", "volume")},
         frame["ts"].to_numpy(dtype=float)[-strategy.lookback :, None],
         symbol,
+        sentiment.features if strategy.uses_sentiment else None,
     )
     return {
         "bars": len(new),
@@ -412,6 +413,10 @@ def _refresh_holdings(price_map: dict[str, float]) -> None:
 
 def _update_optional_layers() -> None:
     cfg = config()
+    try:
+        sentiment.record()
+    except Exception as e:  # noqa: BLE001 - recording is best effort
+        log_general.warning(f"sentiment recorder failed: {e}")
     if cfg.whale_tracking_enabled:
         try:
             update_whale_data()
@@ -542,6 +547,19 @@ def perform_analysis(state: UIState) -> None:
     )
 
 
+def _beat(error: str | None) -> None:
+    try:
+        heartbeat.write(
+            main_book_name(),
+            config().price_update_seconds,
+            tokens=list(config().secondary_mint_symbols),
+            paused=promotion.paused() is not None,
+            last_error=error,
+        )
+    except Exception as e:  # noqa: BLE001 - a missed heartbeat must not stop trading
+        log_general.warning(f"heartbeat write failed: {e}")
+
+
 def start_trading(state: UIState, dry_run: bool = False) -> None:
     """Run the trading loop in a background thread, feeding the UI state.
 
@@ -582,11 +600,14 @@ def start_trading(state: UIState, dry_run: bool = False) -> None:
                     )
                     _capture_baseline()
                     _baseline_key = token_key
+                error = None
                 try:
                     perform_analysis(state)
                 except Exception as e:  # noqa: BLE001 - keep the loop alive across errors
+                    error = str(e)
                     log_general.error(f"analysis cycle failed: {e}")
                     state.update(lambda s: setattr(s, "error_count", s.error_count + 1))
+                _beat(error)
                 for remaining in range(config().price_update_seconds, 0, -1):
                     if _stop_event.is_set():
                         return

@@ -33,8 +33,11 @@ def compute_signals(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Entry and exit flags per bar of ``frame``; bar ``i`` uses the window ending at ``i``.
 
-    Bars without a full window of history get no signal.
+    Bars without a full window of history get no signal. Strategies that
+    read sentiment get the recorded features unless ``sentiment`` is given.
     """
+    if sentiment is None and strategy.uses_sentiment:
+        from sol_trade.sentiment import features as sentiment
     n = len(frame)
     entry = np.zeros(n, dtype=bool)
     exit_ = np.zeros(n, dtype=bool)

@@ -10,7 +10,7 @@
 
 **A Solana trading bot that runs your strategies and swaps through Jupiter.**
 
-[Get started](#getting-started) · [Configuration](#configuration) · [Multi-token portfolios](#multi-token-portfolios) · [Custom strategies](#custom-strategies) · [FAQ](#faq)
+[Get started](#getting-started) · [Configuration](#configuration) · [Multi-token portfolios](#multi-token-portfolios) · [Custom strategies](#custom-strategies) · [Research pipeline](#research-pipeline) · [Agent CLI](#agent-cli) · [FAQ](#faq)
 
 </div>
 
@@ -21,14 +21,19 @@
 
 | Feature | What it does |
 | --- | --- |
-| Technical analysis | EMA, RSI, and Bollinger Bands out of the box — pure Python, no C libraries |
+| Technical analysis | EMA, RSI, Bollinger Bands, MACD, ATR and more — pure Python, no C libraries |
 | Multiple tokens | Trade several tokens in the same loop |
 | Position management | Stop-loss, take-profit, and trailing stop on every position |
-| Custom strategies | Use your own strategy file |
-| Whale tracking | Watches configured wallets for accumulation or dumping |
-| Confluence filter | Sizes every trade from whale activity, market regime, and sentiment |
+| JSON strategies | Describe a strategy in a JSON file; no code to run |
+| Backtests | Replays stored candles through the same engine the bot trades with, after costs |
+| Research pipeline | Gates, a held-out period, paper trading and automatic promotion and demotion |
+| Agent CLI | Every research and pipeline command prints one JSON object |
+| Kill switch | Flattens everything and pauses at a 15% drawdown |
+| Sentiment recorder | Records Reddit posts and comments as strategy inputs |
+| Whale tracking | Watches configured wallets for accumulation or dumping *(opt-in)* |
+| Confluence filter | Sizes trades from whale activity, market regime, and sentiment *(opt-in)* |
 | Market regime | Scales positions down in bearish markets *(opt-in)* |
-| Sentiment breaker | Pauses trading when social sentiment crashes *(opt-in)* |
+| Sentiment breaker | Pauses trading when recorded sentiment crashes *(opt-in)* |
 
 ## Getting started
 
@@ -39,9 +44,9 @@
 3. Configure credentials and tokens:
 
    - In `.env`, set `SOLTRADE_PRIVATE_KEY` (your Solana wallet).
-   - In `config.json`, set `secondary_mints` / `secondary_mint_symbols` — the token(s) you want to trade.
+   - In `config.json`, set `primary_mint` / `primary_mint_symbol` (the token you pay with) and `secondary_mints` / `secondary_mint_symbols` (the token(s) you want to trade). An empty token list is fine: the bot then idles and records.
 
-4. Paper trade first by running the launcher with `--dry-run`. Swaps are simulated and the wallet is never touched:
+4. Paper trade first by running the launcher with `--dry-run`. Swaps are simulated against a virtual `risk.max_live_capital` and the wallet is never touched, so no private key is needed:
 
    ```bash
    run.cmd --dry-run     # Windows
@@ -72,12 +77,12 @@ Fill in `config.json` and `.env` as in step 3, and drop `--dry-run` to trade for
 
 SolTrade runs a continuous loop:
 
-1. **Fetch** — the bot retrieves fresh prices and candlesticks for every configured token.
-2. **Analyze** — the active strategy computes indicators (EMA, RSI, and Bollinger Bands by default) and produces `entry` / `exit` signals.
-3. **Act** — buy signals open a position; sell signals, stop-losses, take-profits, and trailing stops close it. Every trade is routed through the Jupiter Swap API.
-4. **Protect** — open positions are tracked and persisted to disk, so a restart resumes where it left off.
+1. **Fetch** — the bot updates each token's candles at its strategy's timeframe and keeps them in a local store.
+2. **Analyze** — when a bar closes, the token's strategy computes its indicators and produces `entry` / `exit` signals.
+3. **Act** — entries and signal exits fill at the next bar's open. Stop-losses and trailing stops are watched within the bar against levels set at the previous close; take-profits trigger on a close and fill at the next open. Every live trade is routed through the Jupiter Swap API.
+4. **Protect** — positions live in `data/research.db`, so a restart resumes where it left off and replays any bars it missed.
 
-Optional layers — whale tracking, a confluence sizing filter, market regime detection, and a sentiment circuit breaker — operate between the signal and the trade. See [Advanced features](#advanced-features) for details.
+The [backtester](#research-pipeline) runs the same engine on stored candles, so a backtest and the live loop make the same decisions from the same bars. Optional layers — whale tracking, a confluence sizing filter, market regime detection, and a sentiment circuit breaker — operate between the signal and the trade for tokens you configure by hand. See [Advanced features](#advanced-features) for details.
 
 ### Terminal UI
 
@@ -93,7 +98,7 @@ The bot runs inside a full-screen terminal UI:
 
 ## Configuration
 
-SolTrade reads its configuration from `config.json` and its credentials from the `.env` file, both in the project root. Copy `config.json.sample` to `config.json` and `.env.sample` to `.env` before the first run. Environment variables take precedence over `config.json`.
+SolTrade reads its configuration from `config.json` and its credentials from the `.env` file, both in the project root. Copy `config.json.sample` to `config.json` and `.env.sample` to `.env` before the first run. Environment variables take precedence over `config.json`, and `SOLTRADE_CONFIG_PATH` and `SOLTRADE_DOTENV_PATH` point the bot and the CLI at files elsewhere.
 
 Config is **hot-reloaded**: edits to `config.json` are picked up automatically on the next trading cycle (≤ 1 minute) — strategy, feature toggles, slippage, whale wallets, polling intervals, and the traded tokens all apply live. Structural settings (the primary token you pay with, RPC, exchange) and `.env` credentials still require a restart. Removing a token that currently has an open position is refused until that position is closed.
 
@@ -112,27 +117,60 @@ Secrets live in the git-ignored `.env` file:
 | --- | --- | --- |
 | `rpc_https` | Solana RPC endpoint for balances and token data | `https://api.mainnet-beta.solana.com` |
 | `jup_api` | Jupiter Swap API endpoint | `https://api.jup.ag/swap/v2` |
-| `primary_mint` / `primary_mint_symbol` | The token you pay with (usually a stablecoin) | `EPjF..v` / `USDC` |
-| `secondary_mints` / `secondary_mint_symbols` | The token(s) you want to trade | `[So11..2]` / `[SOL]` |
+| `primary_mint` / `primary_mint_symbol` | The token you pay with (usually a stablecoin); required | none (the sample uses USDC) |
+| `secondary_mints` / `secondary_mint_symbols` | The token(s) you want to trade | `[]` |
+| `token_mints` | Mints of tokens you research or promote but don't trade by hand, e.g. `{"JUP": "JUPy..."}` | `{}` |
 | `sol_mint` | Mint address of native SOL | `So11111111111111111111111111111111111111112` |
 | `price_update_seconds` | How often token prices refresh | `60` |
 | `max_slippage` | Maximum accepted slippage in BPS (100 BPS = 1%) | `50` |
-| `strategy` | The strategy to trade with | `default` |
+| `strategy` | The strategy to trade with (`strategies/{name}.json`, or the built-in `default`) | `default` |
+| `strategies_path` | Folder of JSON strategies | `strategies` |
 | `secondary_weights` | Portfolio weight per token (parallel to `secondary_mints`); empty = equal split | `[]` |
 | `token_strategies` | Per-token strategy overrides, e.g. `{"SOL": "default", "JUP": "momentum"}` | `{}` |
 | `token_exchanges` | Per-token candle-data exchange overrides, e.g. `{"POPCAT": "mexc"}`; missing = `data_exchange` | `{}` |
 | `data_exchange` | Exchange used for candlestick data (via ccxt) | `okx` |
 | `candles_path` | Local SQLite store for candlestick history | `data/candles.db` |
+| `research_db_path` | Positions, trades, trials and the pipeline | `data/research.db` |
+
+### Sections
+
+Each section is an object in `config.json`; keys you leave out keep their defaults.
+
+| Section | Key | What it does | Default |
+| --- | --- | --- | --- |
+| `risk` | `max_live_capital` | Capital the bot may deploy (and the dry run's virtual cash) | `500` |
+| | `max_trade_size` | Largest single buy | `100` |
+| | `max_drawdown_pct` | Kill switch and every drawdown gate | `15` |
+| | `dust_threshold_usd` | Positions worth less are written off instead of sold | `1` |
+| `rpc` | `max_cu_per_second` | Ceiling for all Solana RPC traffic | `30` |
+| | `daily_cu_budget` | Past this, only the balance reads swaps need still run | `600000` |
+| | `method_cu` | Per-method compute-unit overrides | `{}` |
+| | `holdings_refresh_seconds` | Wallet holdings view on the dashboard; `0` turns it off | `600` |
+| | `balance_refresh_seconds` | How long a balance read is reused | `900` |
+| | `sol_reserve_ttl_seconds` | How long the SOL fee reserve is reused | `3600` |
+| `costs` | `default_cost_bps` | Per-side cost for tokens without measured quotes | `50` |
+| | `safety_multiplier` | Measured costs are multiplied by this | `1.25` |
+| | `probe_sizes_usd` | Trade sizes `measure-costs` quotes | `[25, 100, 250]` |
+| | `max_sample_age_days` | Older quotes are stale | `14` |
+| `backfill` | `default_timeframes` / `default_days` | What `backfill` downloads without arguments | `["1h"]` / `730` |
+| | `page_limit` | Bars per exchange request | `100` |
+| `gates` | see [Research pipeline](#research-pipeline) | | |
+| `promotion` | see [Research pipeline](#research-pipeline) | | |
+| `sentiment` | `subreddits` | Subreddits the recorder reads | `[]` |
+| | `record` | Record while the bot runs | `true` |
+| | `request_interval_seconds` | Gap between Reddit requests | `65` |
+| | `keywords` | Words that count as a mention, per symbol, e.g. `{"SOL": ["SOL", "Solana"]}`; the symbol by default | `{}` |
 
 ### Advanced settings
 
 | Setting | What it does | Default |
 | --- | --- | --- |
-| `whale_tracking_enabled` | Poll configured whale wallets and produce signals | `true` |
+| `whale_tracking_enabled` | Poll configured whale wallets and produce signals | `false` |
 | `whale_wallets` | Wallet addresses to watch, per token symbol | `{}` |
 | `whale_poll_interval_minutes` | How often whale balances are polled | `5` |
-| `confluence_enabled` | Route every trade through the confluence filter | `true` |
+| `confluence_enabled` | Route every trade through the confluence filter | `false` |
 | `market_regime_enabled` | Scale position sizes by market regime | `false` |
+| `market_regime_pair` | The `BASE/QUOTE` pair whose daily trend sets the regime | `""` |
 | `sentiment_enabled` | Pause trading when sentiment crashes | `false` |
 | `sentiment_pause_hours` | How long a sentiment block lasts | `4` |
 | `sentiment_threshold` | Per-token block threshold (-1 to +1) | `-0.5` |
@@ -178,7 +216,7 @@ Both settings hot-reload, but `data_exchange` itself is structural — changing 
 
 ### Changing tokens while running
 
-- **Adding** a token is always safe — it starts fresh (new position CSV, no history).
+- **Adding** a token is always safe — it starts flat, with no position.
 - **Removing** a token with an **open position is refused**: the change is rolled back and an error is logged, because a removed token stops being managed (no stop-loss, take-profit, or trailing stop). Close the position first.
 - When the token set changes, the P&L baseline is recaptured automatically so profit figures stay correct.
 
@@ -232,7 +270,7 @@ In bearish regimes, all position sizes drop an additional 50%. Protective exits 
 
 ### Market regime detection
 
-The market is classified from the SOL/USDC daily trend (20-day SMA) and DEX volume, and entries are scaled accordingly:
+The market is classified from the daily trend (20-day SMA) of `market_regime_pair` and DEX volume, and entries are scaled accordingly:
 
 | Regime | Condition | Position Modifier |
 | --- | --- | --- |
@@ -240,77 +278,128 @@ The market is classified from the SOL/USDC daily trend (20-day SMA) and DEX volu
 | NEUTRAL | Mixed signals | 1.0x |
 | BEARISH | Price below 20-day SMA + falling volume | 0.5x |
 
-This feature is enabled by setting `"market_regime_enabled": true` in `config.json`.
+This feature is enabled by setting `"market_regime_enabled": true` and a `market_regime_pair` such as `"SOL/USDC"` in `config.json`.
 
 ### Sentiment circuit breaker
 
-The breaker polls social sentiment from Reddit for the tracked tokens and pauses trading when sentiment collapses:
+The breaker scores the last day of [recorded](#sentiment-recorder) Reddit mentions of each tracked token and pauses trading when sentiment collapses:
 
 - **Token pause** — a token is blocked when its score drops below `sentiment_threshold`.
 - **Market crash** — all new entries pause when every tracked token is below `sentiment_crash_threshold`.
 - **Recovery** — blocks expire automatically after `sentiment_pause_hours`.
 
-This feature is enabled by setting `"sentiment_enabled": true` in `config.json`.
+This feature is enabled by setting `"sentiment_enabled": true` in `config.json`. Strategies promoted by the [research pipeline](#research-pipeline) are never filtered by the breaker, the confluence filter or whale signals: they trade exactly as they were tested.
+
+### Sentiment recorder
+
+While the bot runs, it reads the new posts and new comments of each subreddit in `sentiment.subreddits` through Reddit's public RSS feeds, one request a minute (Reddit's limit for anonymous readers), and stores the raw text in `data/sentiment.db`. Strategies read two features from it with the `sentiment` indicator: `mentions` (items naming the token in a trailing window) and `score` (their mean [VADER](https://github.com/cjhutto/vaderSentiment) tone, -1 to +1). Values before recording started are missing, so backtests only see sentiment for the period actually recorded. `status` reports the recorder's items, gaps and errors.
 
 </details>
 
 ## Custom strategies
 
+A strategy is a JSON file, `strategies/{name}.json`, where `name` is lowercase with underscores (`momentum`, `mean_reversion`). Set `"strategy": "{name}"` (or a `token_strategies` entry) to trade it. Without a file, `default` is the built-in example; it is not a tested edge.
+
 > [!NOTE]
-> Strategy names are lowercase, with underscores between words — `momentum`, `mean_reversion`, etc.
+> Python strategy files (`*_strategy.py`) are no longer loaded. A token whose strategy only exists as Python is skipped with the error `convert to strategies/{name}.json`.
 
-1. Create `strategies/{name}_strategy.py`.
-2. Define a class named after the strategy in PascalCase plus `Strategy` (`mean_reversion` → `MeanReversionStrategy`), subclassing `BaseStrategy`, with the following methods:
-   - `__init__(self, df)` — store `self.df` and set the risk parameters `stoploss`, `takeprofit`, `trailing_stoploss`, and `trailing_stoploss_target` (percentages).
-   - `apply_strategy(self)` — compute indicators, then set `self.df["entry"] = 1` on bars that should buy and `self.df["exit"] = 1` on bars that should sell.
-3. Set `"strategy": "{name}"` in `config.json`.
-
-Indicators (`ema`, `sma`, `rsi`) are available from `sol_trade.strategy` — pure-Python, TA-Lib-equivalent implementations.
-
-<details>
-<summary><b>Example — a momentum strategy</b></summary>
-
-```python
-# strategies/momentum_strategy.py
-import pandas as pd
-
-from sol_trade.strategy import ema, rsi
-from .base_strategy import BaseStrategy
-
-
-class MomentumStrategy(BaseStrategy):
-    def __init__(self, df: pd.DataFrame):
-        self.df = df
-        self.stoploss = 5
-        self.takeprofit = 10
-        self.trailing_stoploss = 2
-        self.trailing_stoploss_target = 5
-
-    def apply_strategy(self):
-        self.df["ema_fast"] = ema(self.df["close"], 8)
-        self.df["ema_slow"] = ema(self.df["close"], 21)
-        self.df["rsi"] = rsi(self.df["close"], 14)
-
-        entry = (self.df["ema_fast"] > self.df["ema_slow"]) & (self.df["rsi"] <= 40)
-        exit_ = (self.df["ema_fast"] < self.df["ema_slow"]) | (self.df["rsi"] >= 70)
-
-        self.df.loc[entry, "entry"] = 1
-        self.df.loc[exit_, "exit"] = 1
-
-        return self.df
+```json
+{
+  "schema": 1,
+  "name": "momentum",
+  "description": "Fast EMA over slow EMA while RSI isn't stretched.",
+  "timeframe": "1h",
+  "lookback": 60,
+  "risk": {"stoploss": 5, "takeprofit": 10, "trailing_stoploss": 2, "trailing_stoploss_target": 5},
+  "indicators": {
+    "fast": {"fn": "ema", "period": 8},
+    "slow": {"fn": "ema", "period": 21},
+    "rsi": {"fn": "rsi", "period": 14}
+  },
+  "entry": {"all": [{"crosses_above": ["fast", "slow"]}, ["rsi", "<=", 60]]},
+  "exit": {"any": [{"crosses_below": ["fast", "slow"]}, ["rsi", ">=", 75]]}
+}
 ```
 
-> [!IMPORTANT]
-> The loader already picks the class for the configured strategy name, so `apply_strategy` must **not** be gated on `config().strategy` — a guard like `if config().strategy == "momentum"` silently no-ops when the strategy is assigned per-token via `token_strategies`.
+| Key | Meaning |
+| --- | --- |
+| `schema` | Always `1` |
+| `name` | Must equal the file name |
+| `timeframe` | Bar size the strategy trades on, e.g. `15m`, `1h`, `4h` (any timeframe the exchange offers) |
+| `lookback` | Bars of history each decision sees; must cover the indicators' warm-up |
+| `risk` | Percentages; `0` or a missing key turns that exit off. The trailing stop sits `trailing_stoploss`% under the highest closed-bar high once a high reaches `trailing_stoploss_target`% above entry |
+| `indicators` | Named indicators: `{"fn": ..., parameters, "input": series}`; `input` defaults to `close` |
+| `entry` / `exit` | Rules evaluated on each closed bar; `exit` is optional |
 
-</details>
+| Function | Parameters (default) | Outputs |
+| --- | --- | --- |
+| `sma`, `ema`, `highest`, `lowest` | `period` | one value |
+| `rsi` | `period` (14) | one value |
+| `roc` | `period` | percent change |
+| `stddev`, `zscore` | `period`, `ddof` (1) | one value |
+| `bbands` | `period` (20), `mult` (2), `ddof` (1) | `upper`, `middle`, `lower`, `width` |
+| `macd` | `fast` (12), `slow` (26), `signal` (9) | `macd`, `signal`, `hist` |
+| `atr` | `period` (14), `method` (`wilder` or `sma`) | one value |
+| `stoch` | `k` (14), `d` (3), `smooth` (3) | `k`, `d` |
+| `sentiment` | `window_hours` (24) | `score`, `mentions` (see [Sentiment recorder](#sentiment-recorder)) |
 
-New strategies may be contributed via pull request.
+- **Series** are `open`, `high`, `low`, `close`, `volume`, an indicator name, or `name.output` for indicators with several outputs (`bb.lower`). Numbers work anywhere a series does.
+- **Arithmetic:** `{"add": [a, b]}`, `sub`, `mul`, `div`, and `{"shift": [series, bars]}` for an earlier bar's value.
+- **Rules:** `[a, op, b]` with `op` one of `>`, `>=`, `<`, `<=`, `==`, `!=`; `{"all": [rules]}`, `{"any": [rules]}`, `{"not": rule}`; `{"crosses_above": [a, b]}` and `{"crosses_below": [a, b]}` compare the last two bars. A comparison with a missing value is false.
+- **Identity:** the strategy's hash is the SHA-256 of its canonical JSON, so any edit makes a new candidate in the [research pipeline](#research-pipeline).
+
+Errors name the exact place, e.g. `indicators.fast.fn: unknown fn 'emaa'` or `lookback: 21 is smaller than the required warm-up of 22 bars`. `backtest` reports them before running anything.
+
+## Research pipeline
+
+The pipeline decides which strategies trade, with evidence for every step. Research uses stored candles and quotes only: backfills, backtests and evaluations make no Solana RPC calls, and every result carries `"rpc": {"calls": 0, "cu": 0}` to prove it.
+
+1. **Backfill** candles with `backfill`; each series is checked for gaps, duplicates and bad bars.
+2. **Measure costs** with `measure-costs`: Jupiter quotes at `costs.probe_sizes_usd` in both directions give a per-size cost curve (times `costs.safety_multiplier`). Tokens without quotes use `costs.default_cost_bps` and are flagged `COSTS_DEFAULT`.
+3. **Backtest** with `backtest <strategy> <symbol>`. The newest `gates.holdout_days` are held out. The rest runs as one backtest after costs, sliced into `gates.folds` folds, against buy-and-hold and cash. The verdict is `PASS`, `FAIL` or `INSUFFICIENT_EVIDENCE`, with reasons.
+4. **Promote** a `PASS` with `promote <strategy> <symbol>`: the held-out period runs once per hash. A failure rejects the hash for good; a pass starts a paper book.
+5. **Paper** books trade the strategy on live candles with modeled costs. The bot moves a paper candidate to live by itself once its evidence qualifies, and retires it after `promotion.max_paper_days` if it never does.
+6. **Live** strategies are added to `config.json` (atomically, with a backup in `data/config_backups/`) and trade from the spec that was tested.
+
+| Gate | Passes when | Config |
+| --- | --- | --- |
+| Evidence | At least 30 trades and under 2% missing bars; otherwise `INSUFFICIENT_EVIDENCE` | `gates.min_trades`, `gates.max_gap_fraction` |
+| Drawdown | Max drawdown ≤ 15% | `risk.max_drawdown_pct` |
+| Sharpe | Above 0 and above buy-and-hold | |
+| Folds | At least 3 of 4 folds profitable | `gates.folds`, `gates.min_positive_folds` |
+| Deflated Sharpe | ≥ 0.95: the Sharpe ratio still beats the best of the variants tried on that symbol and timeframe | `gates.min_deflated_sharpe` |
+| Held out | At least 8 trades, a profit, drawdown ≤ 15% | `gates.holdout_min_trades` |
+| Paper → live | 14 days, 90% of bars observed, 2 round trips, return within max(1 point, 25%) of a backtest replay, drawdown ≤ 15%, a free live slot, the token not traded by another strategy | `promotion.*` |
+
+Every strategy variant counts: the deflated Sharpe ratio corrects for the number of distinct hashes tested on a symbol and timeframe, so trying many variants raises the bar.
+
+**Demotion.** A live strategy is flattened and removed from `config.json` when its own drawdown reaches `promotion.demote_drawdown_pct` (10%), when its last `demote_window_days` (60) lose money over at least `demote_min_trades` (10) trades, when its fills cost more than `max_cost_divergence_bps` (50) above the model, or on `demote`.
+
+**Kill switch.** When the bot's capital (`risk.max_live_capital` plus realized and open P&L) falls `risk.max_drawdown_pct` below its high, every position is sold and entries pause until a human runs `resume`.
+
+**Approval.** With `promotion.require_approval` set to `true`, paper → live also waits for a human `approve`.
+
+## Agent CLI
+
+`uv run -m sol_trade.cli <command>` prints one JSON object on stdout and nothing else: `{"ok": true, "command": ..., ...}` on success, `{"ok": false, "command": ..., "error": "<code>", "message": ..., "details": [...]}` otherwise. Exit codes are `0` ok, `1` refused or failed, and `2` usage error. Logs go to the log files. The CLI never signs a transaction.
+
+| Command | Output |
+| --- | --- |
+| `backfill [--symbols A,B] [--timeframes 1h,15m] [--days N]` | Per series: bars added, range, gaps, duplicates, bad bars |
+| `backtest <strategy> <symbol>` | `verdict`, `reasons`, metrics, folds, benchmarks, gates, deflated Sharpe, trial number and count, flags, `rpc` |
+| `candidates [--symbol S]` | The pipeline, trials, and whether trading is paused |
+| `promote <strategy> <symbol>` | The transition, or a refusal code (`not_passed`, `costs_unmeasured`, `paper_full`, `not_ready`, `holdout_failed`, ...) |
+| `demote <strategy> <symbol> [--reason R]` | The transition; `demote_pending` while the bot still has to sell |
+| `measure-costs [--symbols A,B]` | The cost model per token, from fresh Jupiter quotes |
+| `status [--healthcheck]` | Bot mode and heartbeat, positions and P&L after costs, paper books, paused, RPC usage today, recorder health, warnings; `--healthcheck` exits 1 without a fresh heartbeat |
+| `report` | `{"text": ...}`: a Discord-ready summary of at most 1,900 characters |
+| `approve <strategy> <symbol>` | Lets paper → live proceed when `require_approval` is on (interactive terminal only) |
+| `resume` | Clears the kill switch (interactive terminal only) |
 
 ## FAQ
 
 **What happens if I stop the bot while I'm holding a position?**
-Your open position is saved to `data/{TOKEN}_data.csv`. On restart, the bot resumes managing its stop-loss and take-profit.
+Your open position is saved in `data/research.db`. On restart, the bot replays the bars it missed and resumes managing its stop-loss and take-profit. Positions from older versions (`data/{TOKEN}_data.csv`) are imported once and the files renamed to `.migrated`.
 
 **Do I need a Jupiter API key?**
 No. It is optional and only sent if set — the default `swap/v2` endpoint works without one.
@@ -327,11 +416,15 @@ Only in the `.env` file on your machine. The bot loads and signs locally — it 
 | --- | --- |
 | Primary mint | The token you trade with, usually a stablecoin like USDC |
 | Secondary mint | The token you trade for, e.g. SOL |
-| Trading interval | Minutes between each technical analysis pass |
+| Timeframe | The bar size a strategy trades on, e.g. `1h` |
 | Price update interval | Seconds between price refreshes |
 | Slippage | Difference between expected and executed trade price |
 | BPS | Basis points — 100 BPS = 1% |
 | Whale | A wallet holding a large amount of a token |
+| Candidate | One strategy hash on one token, on its way through the research pipeline |
+| Held-out period | The newest history, kept out of every backtest until promotion |
+| Paper book | A virtual book that trades a candidate on live candles without sending swaps |
+| Deflated Sharpe | The probability that a Sharpe ratio beats luck, given how many variants were tried |
 
 ## Development
 

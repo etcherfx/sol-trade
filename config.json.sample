@@ -84,6 +84,9 @@
   "sentiment_threshold": -0.5,
   "sentiment_crash_threshold": -0.7,
   "sentiment": {
-    "subreddits": ["solana", "CryptoCurrency"]
+    "subreddits": ["solana", "CryptoCurrency"],
+    "record": true,
+    "request_interval_seconds": 65,
+    "keywords": {"SOL": ["SOL", "Solana"]}
   }
 }
