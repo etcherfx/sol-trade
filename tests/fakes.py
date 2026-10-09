@@ -42,8 +42,12 @@ class FakeExchange:
 
     id = "fake"
 
-    def __init__(self, ticks: list[list[float]], period: int, clock, t0: int = 1_700_000_000) -> None:
+    def __init__(
+        self, ticks: list[list[float]], period: int, clock, t0: int = 1_700_000_000, windowed: bool = False
+    ) -> None:
         self.timeframes = {"1m": "1m", "5m": "5m", "1h": "1h", "1d": "1d"}
+        # Like OKX: a page covers [since, since + limit bars) only, so it's empty before the history starts.
+        self.windowed = windowed
         self.ticks = ticks
         self.period = period
         self.clock = clock
@@ -54,7 +58,10 @@ class FakeExchange:
         self.calls.append((pair, timeframe, since, limit))
         now = self.clock()
         current = int(now // self.period) * self.period
-        start = max(int((since or 0) // 1000), self.t0)
+        requested = int((since or 0) // 1000)
+        start = max(requested, self.t0)
+        if self.windowed and start >= requested + limit * self.period:
+            return []
         first = max((start - self.t0 + self.period - 1) // self.period, 0)
         out = []
         for i in range(first, len(self.ticks)):

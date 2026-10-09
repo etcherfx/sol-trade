@@ -23,7 +23,6 @@ from sol_trade.spec import timeframe_seconds
 # Restart incremental updates this many bars before the newest stored bar, so
 # a bar stored while it was still forming (older versions did) gets repaired.
 _REPAIR_BARS = 2
-_MAX_EMPTY_PAGES = 50
 
 
 @dataclass
@@ -52,6 +51,9 @@ class SeriesReport:
     misaligned: int = 0
     ohlc_errors: int = 0
     pages: int = 0
+    # Share of the requested range's bars that are stored, when a range was requested.
+    coverage: float | None = None
+    notes: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
@@ -163,18 +165,19 @@ def _fetch_range(
     seen: dict[int, Bar] = {}
     forming: Bar | None = None
     cursor = since
-    empty_pages = 0
     while cursor < until:
         page = exchange.fetch_ohlcv(pair, timeframe=timeframe, since=cursor * 1000, limit=page_limit)
         report.pages += 1
         if not page:
-            empty_pages += 1
-            if empty_pages > _MAX_EMPTY_PAGES:
-                report.errors.append(f"no data returned from {_iso(cursor)} on; stopped")
+            # Exchanges return one page from `since` on, so an empty page means
+            # the history starts later (listing date or the exchange's depth).
+            start = _first_page_with_data(exchange, pair, timeframe, cursor, until, page_limit, report)
+            if start is None:
                 break
-            cursor += page_limit * period  # nothing here (e.g. before listing): skip ahead
+            if cursor == since:
+                report.notes.append(f"{exchange_label(exchange)} history starts at {_iso(start)}, after the requested {_iso(since)}")
+            cursor = start
             continue
-        empty_pages = 0
         newest = cursor - 1
         for ts_ms, open_, high, low, close, volume in page:
             ts = int(ts_ms) // 1000
@@ -195,6 +198,41 @@ def _fetch_range(
     return [seen[ts] for ts in sorted(seen)], forming
 
 
+def exchange_label(exchange: Any) -> str:
+    return str(getattr(exchange, "id", "the exchange"))
+
+
+def _first_page_with_data(
+    exchange: Any, pair: str, timeframe: str, low: int, high: int, page_limit: int, report: SeriesReport
+) -> int | None:
+    """The earliest bar open time in ``[low, high)``, by binary search on ``since``; None if there's none.
+
+    A page starting at ``since`` holds data when the history begins before
+    ``since + page_limit`` bars, so emptiness is monotone in ``since``.
+    """
+    period = timeframe_seconds(timeframe)
+
+    def first_bar(since: int) -> int | None:
+        page = exchange.fetch_ohlcv(pair, timeframe=timeframe, since=since * 1000, limit=page_limit)
+        report.pages += 1
+        stamps = [int(row[0]) // 1000 for row in page if int(row[0]) // 1000 >= since]
+        return min(stamps) if stamps else None
+
+    newest = first_bar(max(high - page_limit * period, low))
+    if newest is None:
+        return None
+    lo, hi = low // period, (max(high - page_limit * period, low)) // period  # in bars; hi has data
+    found = newest
+    while lo < hi:
+        mid = (lo + hi) // 2
+        bar = first_bar(mid * period)
+        if bar is None:
+            lo = mid + 1
+        else:
+            hi, found = mid, bar
+    return found
+
+
 def _validate(pair: str, timeframe: str, report: SeriesReport, start: int | None, end: int | None) -> None:
     period = timeframe_seconds(timeframe)
     frame = load_bars(pair, timeframe, start, end)
@@ -210,6 +248,8 @@ def _validate(pair: str, timeframe: str, report: SeriesReport, start: int | None
     report.largest_gap_bars = int(missing.max()) if missing.size else 0
     expected = int((ts[-1] - ts[0]) // period) + 1
     report.gap_fraction = round(float(missing.sum()) / expected, 6) if expected else 0.0
+    if start is not None and end is not None and end > start:
+        report.coverage = round(len(ts) / ((end - start) // period), 6)
     o, h, low, c = (frame[k].to_numpy() for k in ("open", "high", "low", "close"))
     with np.errstate(invalid="ignore"):
         bad = (
@@ -285,9 +325,13 @@ def update_pair(
 
 
 def backfill(
-    symbols: list[str], timeframes: list[str], days: float, now: float | None = None
+    symbols: list[str], timeframes: list[str], days: float | None = None, now: float | None = None
 ) -> list[dict[str, Any]]:
-    """Backfill every (symbol, timeframe); one report per series, errors included."""
+    """Backfill every (symbol, timeframe) over ``days`` (default ``backfill.default_days``).
+
+    One report per series, errors included.
+    """
+    days = days or float(config().backfill["default_days"])
     reports = []
     for symbol in symbols:
         for timeframe in timeframes:

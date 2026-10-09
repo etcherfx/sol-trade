@@ -115,3 +115,31 @@ def test_candle_store_allows_a_concurrent_writer(market):
     finally:
         conn.rollback()
         conn.close()
+
+
+def test_backfill_finds_where_the_history_starts(monkeypatch):
+    """With an OKX-like exchange, pages before the listing are empty; the start is found by bisection."""
+    ticks = make_ticks(300, seed=5)
+    clock = {"now": 0.0}
+    exchange = FakeExchange(ticks, PERIOD, lambda: clock["now"], windowed=True)
+    monkeypatch.setattr(data_source, "get_exchange", lambda *_args, **_kwargs: exchange)
+    monkeypatch.setattr(config(), "primary_mint_symbol", "QUOTE")
+    monkeypatch.setitem(config().backfill, "page_limit", 50)
+    clock["now"] = exchange.t0 + 250 * PERIOD + 600
+
+    report = history.backfill(["TKN"], ["1h"], days=100, now=clock["now"])[0]  # 2,400 bars asked, 250 exist
+
+    assert report["errors"] == []
+    assert report["total"] == 250
+    assert report["first"] == history._iso(exchange.t0)
+    assert report["notes"] and "history starts at" in report["notes"][0]
+    assert report["coverage"] == pytest.approx(250 / 2400, abs=1e-6)
+    assert report["pages"] < 25  # bisection, not 40-odd empty pages
+
+
+def test_backfill_defaults_to_the_configured_days(market, monkeypatch):
+    exchange, clock = market
+    clock["now"] = exchange.t0 + 250 * PERIOD + 600
+    monkeypatch.setitem(config().backfill, "default_days", 3)
+    report = history.backfill(["TKN"], ["1h"], now=clock["now"])[0]
+    assert report["total"] == 72
