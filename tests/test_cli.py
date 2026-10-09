@@ -60,6 +60,21 @@ def test_healthcheck_follows_the_heartbeat():
     assert code == 0 and payload["heartbeat"]["mode"] == "dry_run"
 
 
+def test_import_sentiment_reports_each_file(monkeypatch):
+    from tests.test_sentiment import ARCHIVE
+
+    assert _run("import-sentiment", str(ARCHIVE))[1]["error"] == "no_subreddits"
+    monkeypatch.setitem(config().sentiment, "subreddits", ["solana"])
+    code, payload = _run("import-sentiment", str(ARCHIVE), "--after", "2026-10-09")
+    assert code == 0, payload
+    assert payload["subreddits"] == ["solana"]
+    assert payload["files"][0]["inserted"] == 6 and payload["files"][0]["bad_lines"] == 2
+    code, payload = _run("import-sentiment", str(ARCHIVE), "missing.ndjson")
+    assert code == 1 and payload["error"] == "file_not_found" and payload["details"] == ["missing.ndjson"]
+    assert _run("import-sentiment", str(ARCHIVE), "--before", "10/09/2026")[0] == 2
+    assert _run("import-sentiment", str(ARCHIVE), "--after", "2026-10-09", "--before", "2026-10-01")[0] == 2
+
+
 def test_backtest_reports_a_verdict_with_zero_rpc(stored_strategy, monkeypatch):
     monkeypatch.setattr(config(), "confluence_enabled", False)
     code, payload = _run("backtest", stored_strategy, "TKN")

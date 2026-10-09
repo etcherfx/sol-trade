@@ -8,6 +8,10 @@ waits out ``x-ratelimit-reset`` and backs off on 429/403. Raw items go to
 ``data/sentiment.db`` deduplicated by id; a batch that shares no id with
 what's stored is recorded as a possible gap.
 
+:func:`import_archive` loads history the feeds can't give: Pushshift or
+Arctic Shift NDJSON dumps, stored as the same rows the recorder would have
+written (same ids, same plain text, same scores).
+
 :func:`features` turns the stored items into strategy inputs: per bar close,
 the number of items mentioning the token in the trailing window and their
 mean VADER compound score. Times before recording started are NaN, so a
@@ -18,6 +22,7 @@ the recorded items instead of fetching on its own.
 """
 
 import html
+import json
 import re
 import sqlite3
 import time
@@ -145,6 +150,164 @@ def parse_feed(xml_text: str, subreddit: str, kind: str) -> list[dict[str, Any]]
             }
         )
     return items
+
+
+# ------------------------------------------------------------------ archives
+
+_PLACEHOLDERS = {"[removed]", "[deleted]"}
+_ID_PREFIX = {"post": "t3_", "comment": "t1_"}
+_MD_ESCAPE = re.compile(r"\\([\\`*_{}\[\]()#+\-.!|>~^&<])")
+_MD_ESCAPED = re.compile("[\ue000-\ue0ff]")
+_MD_FENCE = re.compile(r"^[ \t]*(?:```|~~~).*$", re.MULTILINE)
+_MD_RULE = re.compile(r"^(?=(?:.*[-*_]){3})[ \t|:*_-]+$", re.MULTILINE)  # hr and table separator rows
+_MD_SPOILER = re.compile(r">!|!<")
+_MD_LINE = re.compile(r"^[ \t]*(?:(?:>[ \t]?)+|#{1,6}[ \t]+|[-*+][ \t]+|\d+[.)][ \t]+)", re.MULTILINE)
+_MD_LINK = re.compile(r"\[([^\]]*)\]\(\s*<?[^)\s>]*>?(?:\s+\"[^\"]*\")?\s*\)")
+_MD_SUPER = re.compile(r"\^\(([^)]*)\)")
+_MD_MARKS = re.compile(r"\*\*|~~|`|\^|(?<!\w)__|__(?!\w)")
+_MD_EMPHASIS = re.compile(r"(?<![\w*])[*_](?=\S)|(?<=\S)[*_](?![\w*])")
+_MD_TABLE = re.compile(r"\|")
+
+
+def markdown_plain(markdown: str) -> str:
+    """The plain text :func:`_plain` makes of Reddit's HTML rendering of ``markdown``.
+
+    Archives keep the raw markdown (HTML-escaped like the Reddit API), the
+    feeds the rendered HTML; both must score the same. Link targets go and
+    their text stays, as do bare URLs (Reddit links them with the URL as
+    text); emphasis, quote, heading, list and table markup goes.
+    """
+    text = markdown or ""
+    if text.strip() in _PLACEHOLDERS:
+        return ""
+    text = _MD_ESCAPE.sub(lambda m: chr(0xE000 + ord(m.group(1))), text)
+    text = _MD_FENCE.sub(" ", text)
+    text = _MD_RULE.sub(" ", text)
+    text = _MD_SPOILER.sub("", text)
+    text = _MD_LINE.sub(" ", text)
+    text = _MD_LINK.sub(r"\1", text)
+    text = _MD_SUPER.sub(r"\1", text)
+    text = _MD_MARKS.sub("", text)
+    text = _MD_EMPHASIS.sub("", text)
+    text = _MD_TABLE.sub(" ", text)
+    text = _MD_ESCAPED.sub(lambda m: chr(ord(m.group()) - 0xE000), text)
+    text = html.unescape(text)
+    return _SPACES.sub(" ", _SUBMITTED.sub("", text)).strip()
+
+
+def _archive_created(obj: dict[str, Any]) -> int | None:
+    value = obj.get("created_utc")
+    if isinstance(value, bool):
+        return None
+    try:
+        created = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return int(created) if np.isfinite(created) else None
+
+
+def archive_item(obj: dict[str, Any], subreddit: str) -> dict[str, Any] | None:
+    """One Pushshift / Arctic Shift object as the row the feed recorder would store; None if unusable.
+
+    Comments are the objects with a ``body``. Ids get the ``t3_``/``t1_``
+    prefix of the feeds' ``<id>``, authors the ``/u/`` of their ``<name>``.
+    """
+    kind = "comment" if "body" in obj else "post"
+    raw_id = str(obj.get("id") or "").strip()
+    created = _archive_created(obj)
+    if not raw_id or created is None:
+        return None
+    item_id = raw_id if raw_id.startswith(("t1_", "t3_")) else _ID_PREFIX[kind] + raw_id
+    if kind == "comment":
+        title, text = "", markdown_plain(str(obj.get("body") or ""))
+    else:
+        title = html.unescape(str(obj.get("title") or ""))
+        text = markdown_plain(str(obj.get("selftext") or ""))
+    author = str(obj.get("author") or "")
+    return {
+        "id": item_id,
+        "subreddit": subreddit,
+        "kind": kind,
+        "author": f"/u/{author}" if author else "",
+        "created": created,
+        "title": title,
+        "text": text,
+        "compound": score_text(f"{title} {text}"),
+    }
+
+
+_IMPORT_BATCH = 5000
+_INSERT_ITEM = """
+INSERT OR IGNORE INTO items (id, subreddit, kind, author, created, title, text, compound, fetched_at)
+VALUES (:id, :subreddit, :kind, :author, :created, :title, :text, :compound, :fetched_at)
+"""
+
+
+def import_archive(
+    path: str | Path,
+    subreddits: list[str],
+    after: int | None = None,
+    before: int | None = None,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Stream an NDJSON archive of Reddit posts and comments into the items table.
+
+    Only ``subreddits`` (case-insensitive) are kept, and with ``after`` /
+    ``before`` only items created in ``[after, before)``. Rows land exactly
+    as the feed recorder stores them, so importing twice, or recording an
+    imported item live, adds nothing.
+    """
+    now = time.time() if now is None else now
+    wanted = {s.lower(): s for s in subreddits}
+    counts = dict.fromkeys(
+        ("read", "kept", "inserted", "duplicates", "skipped_unknown_subreddit", "skipped_out_of_range",
+         "bad_lines"), 0
+    )
+    pending: list[dict[str, Any]] = []
+
+    def flush(conn: sqlite3.Connection) -> None:
+        before_changes = conn.total_changes
+        conn.executemany(_INSERT_ITEM, pending)
+        inserted = conn.total_changes - before_changes
+        conn.commit()
+        counts["inserted"] += inserted
+        counts["duplicates"] += len(pending) - inserted
+        pending.clear()
+
+    with _connect() as conn, open(path, encoding="utf-8", errors="replace") as lines:
+        for line in lines:
+            if not line.strip():
+                continue
+            counts["read"] += 1
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                counts["bad_lines"] += 1
+                continue
+            if not isinstance(obj, dict):
+                counts["bad_lines"] += 1
+                continue
+            subreddit = wanted.get(str(obj.get("subreddit") or "").lower())
+            if subreddit is None:
+                counts["skipped_unknown_subreddit"] += 1
+                continue
+            created = _archive_created(obj)
+            if created is not None and (
+                (after is not None and created < after) or (before is not None and created >= before)
+            ):
+                counts["skipped_out_of_range"] += 1
+                continue
+            item = archive_item(obj, subreddit)
+            if item is None:
+                counts["bad_lines"] += 1
+                continue
+            counts["kept"] += 1
+            pending.append({**item, "fetched_at": now})
+            if len(pending) >= _IMPORT_BATCH:
+                flush(conn)
+        if pending:
+            flush(conn)
+    return {"path": str(path), **counts}
 
 
 # ----------------------------------------------------------------- recorder

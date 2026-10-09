@@ -2,6 +2,7 @@
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 import httpx
 import numpy as np
@@ -56,6 +57,104 @@ def test_parse_strips_markup_and_skips_comment_titles():
     assert comment["title"] == ""  # "/u/y on <post title>" would repeat the post's mention
     assert comment["text"] == "this is a terrible rug"
     assert comment["compound"] < 0 < post["compound"]
+
+
+FIXTURES = Path(__file__).parent / "fixtures"
+ARCHIVE = FIXTURES / "reddit_archive.ndjson"
+
+
+def _feed_items() -> dict[str, dict]:
+    items = {}
+    for kind in ("post", "comment"):
+        xml = (FIXTURES / f"reddit_feed_{kind}s.xml").read_text(encoding="utf-8")
+        items.update({i["id"]: i for i in sentiment.parse_feed(xml, "solana", kind)})
+    return items
+
+
+def _archived() -> list[dict]:
+    rows = []
+    for line in ARCHIVE.read_text(encoding="utf-8").splitlines():
+        try:
+            rows.append(json.loads(line))
+        except ValueError:
+            continue
+    return rows
+
+
+def test_archived_items_match_what_the_feeds_record():
+    """Real feed entries (authors renamed) next to the same items in archive form: raw markdown, bare ids."""
+    live = _feed_items()
+    assert set(live) == {"t3_1x1ope1", "t3_1x1kblg", "t1_pewp3ap", "t1_pewmkl9"}
+    archived = {}
+    for obj in _archived():
+        item = sentiment.archive_item(obj, "solana")
+        if item is not None and item["id"] in live:
+            archived[item["id"]] = item
+    assert set(archived) == set(live)
+    for item_id, item in archived.items():
+        for key in ("subreddit", "kind", "author", "created", "title", "text"):
+            assert item[key] == live[item_id][key], (item_id, key)
+        assert item["compound"] == pytest.approx(live[item_id]["compound"], abs=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("markdown", "rendered"),
+    [
+        ("> quoted **bold** and *em*\n\n# Heading",
+         "<blockquote><p>quoted <strong>bold</strong> and <em>em</em></p></blockquote><h1>Heading</h1>"),
+        ("- one\n- two\n\n1. first\n2. second",
+         "<ul><li>one</li><li>two</li></ul><ol><li>first</li><li>second</li></ol>"),
+        ("a | b\n---|---\nc | d",
+         "<table><thead><tr><th>a</th><th>b</th></tr></thead><tbody><tr><td>c</td><td>d</td></tr></tbody></table>"),
+        ("~~gone~~ >!hidden!< ^(tiny words) ^up `code` snake_case 2 * 3",
+         ('<p><del>gone</del> <span class="md-spoiler-text">hidden</span> <sup>tiny words</sup> <sup>up</sup> '
+          "<code>code</code> snake_case 2 * 3</p>")),
+        (r'\*not em\* see [the docs](https://example.com "title") or https://example.com',
+         ('<p>*not em* see <a href="https://example.com" title="title">the docs</a> or '
+          '<a href="https://example.com">https://example.com</a></p>')),
+        ("```\nprint(1)\n```\n\n***\n\nAT&amp;T &lt;3", "<pre><code>print(1)\n</code></pre><hr/><p>AT&amp;T &lt;3</p>"),
+        ("[removed]", ""),
+    ],
+)
+def test_markdown_reduces_to_the_text_of_its_html(markdown, rendered):
+    assert sentiment.markdown_plain(markdown) == sentiment._plain(rendered)
+
+
+def test_archive_ids_kinds_and_times():
+    post = sentiment.archive_item({"id": "t3_abc", "created_utc": "1700000000.0", "title": "A &amp; B"}, "sub")
+    assert post is not None and post["id"] == "t3_abc" and post["kind"] == "post"
+    assert post["created"] == 1700000000 and post["title"] == "A & B" and post["author"] == ""
+    comment = sentiment.archive_item({"id": "xyz", "created_utc": 1700000000, "body": "[deleted]"}, "sub")
+    assert comment is not None and comment["id"] == "t1_xyz" and comment["text"] == ""
+    assert sentiment.archive_item({"id": "q", "created_utc": "soon"}, "sub") is None
+    assert sentiment.archive_item({"created_utc": 1}, "sub") is None
+
+
+def test_import_is_idempotent_and_live_fetches_duplicate_it(monkeypatch):
+    monkeypatch.setattr(sentiment, "_IMPORT_BATCH", 2)
+    first = sentiment.import_archive(ARCHIVE, ["Solana"], now=50.0)
+    assert {k: v for k, v in first.items() if k != "path"} == {
+        "read": 9, "kept": 6, "inserted": 6, "duplicates": 0,
+        "skipped_unknown_subreddit": 1, "skipped_out_of_range": 0, "bad_lines": 2,
+    }
+    again = sentiment.import_archive(ARCHIVE, ["solana"], now=60.0)
+    assert again["inserted"] == 0 and again["duplicates"] == 6
+    live = [i for i in _feed_items().values() if i["kind"] == "post"]
+    assert sentiment._store("solana/post", live, 200, None, 70.0)["new"] == 0
+    with sentiment._connect() as conn:
+        rows = conn.execute("SELECT id, subreddit, title, text, fetched_at FROM items ORDER BY created").fetchall()
+    assert len(rows) == 6
+    assert rows[0] == ("t3_1x0aaaa", "Solana", "SOL to the moon", "", 50.0)  # [removed] body, title kept
+
+
+def test_import_keeps_the_requested_days():
+    after = int(datetime(2026, 10, 9, 12, tzinfo=UTC).timestamp())
+    before = int(datetime(2026, 10, 9, 19, 5, tzinfo=UTC).timestamp())
+    report = sentiment.import_archive(ARCHIVE, ["solana"], after=after, before=before)
+    assert report["kept"] == 3 and report["skipped_out_of_range"] == 3
+    with sentiment._connect() as conn:
+        ids = {r[0] for r in conn.execute("SELECT id FROM items")}
+    assert ids == {"t3_1x1kblg", "t3_1x1ope1", "t1_pewmkl9"}
 
 
 class _Client(httpx.Client):

@@ -342,6 +342,8 @@ This feature is enabled by setting `"sentiment_enabled": true` in `config.json`.
 
 While the bot runs, it reads the new posts and new comments of each subreddit in `sentiment.subreddits` through Reddit's public RSS feeds, one request a minute (Reddit's limit for anonymous readers), and stores the raw text in `data/sentiment.db`. Strategies read two features from it with the `sentiment` indicator: `mentions` (items naming the token in a trailing window) and `score` (their mean [VADER](https://github.com/cjhutto/vaderSentiment) tone, -1 to +1). Values before recording started are missing, so backtests only see sentiment for the period actually recorded. `status` reports the recorder's items, gaps and errors.
 
+The feeds have no history. For backtests, import archived posts and comments with `import-sentiment`: newline-delimited JSON with one Reddit object per line, as Pushshift and Arctic Shift dumps and the Arctic Shift API produce them (decompress `.zst` dumps first). Objects with a `body` are comments, the rest posts. Only the subreddits in `sentiment.subreddits` (or `--subreddits`) are kept; `--after` keeps items from that UTC day on, `--before` items before that day. Imported items get the ids, text and scores the recorder would have stored, so importing a file twice, or recording an imported item live, adds nothing.
+
 </details>
 
 ## Custom strategies
@@ -436,6 +438,7 @@ Every strategy variant counts: the deflated Sharpe ratio corrects for the number
 | Command | Output |
 | --- | --- |
 | `backfill [--symbols A,B] [--timeframes 1h,15m] [--days N]` | Per series: bars added, range, gaps, duplicates, bad bars |
+| `import-sentiment <file> [<file> ...] [--subreddits a,b] [--after YYYY-MM-DD] [--before YYYY-MM-DD]` | Per file: lines read, kept, inserted, duplicates, skipped (other subreddits, outside the days), bad lines |
 | `backtest <strategy> <symbol>` | `verdict`, `reasons`, metrics, folds, benchmarks, gates, deflated Sharpe, trial number and count, flags, `rpc` |
 | `candidates [--symbol S]` | The pipeline, trials, and whether trading is paused |
 | `promote <strategy> <symbol>` | The transition, or a refusal code (`not_passed`, `costs_unmeasured`, `paper_full`, `not_ready`, `holdout_insufficient`, `holdout_failed`, ...) |

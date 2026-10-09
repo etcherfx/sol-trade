@@ -14,6 +14,8 @@ import math
 import sys
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, NoReturn
 
 import numpy as np
@@ -112,6 +114,29 @@ def cmd_backfill(args: argparse.Namespace) -> dict[str, Any]:
             [{"series": f"{r['pair']} {r['timeframe']}", "errors": r["errors"]} for r in failed] + [{"reports": reports}],
         )
     return {"series": reports}
+
+
+def _day(value: str | None, flag: str) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=UTC).timestamp())
+    except ValueError as e:
+        raise CliError("usage", f"{flag} must be a date like 2024-01-31", exit_code=2) from e
+
+
+def cmd_import_sentiment(args: argparse.Namespace) -> dict[str, Any]:
+    subreddits = _symbols(args.subreddits, [s for s in config().sentiment.get("subreddits") or [] if s])
+    if not subreddits:
+        raise CliError("no_subreddits", "no subreddits given and none configured in sentiment.subreddits")
+    after, before = _day(args.after, "--after"), _day(args.before, "--before")
+    if after is not None and before is not None and after >= before:
+        raise CliError("usage", "--after must be earlier than --before", exit_code=2)
+    missing = [p for p in args.paths if not Path(p).is_file()]
+    if missing:
+        raise CliError("file_not_found", f"{len(missing)} file(s) not found", missing)
+    files = [sentiment.import_archive(p, subreddits, after, before) for p in args.paths]
+    return {"subreddits": subreddits, "files": files}
 
 
 def cmd_backtest(args: argparse.Namespace) -> dict[str, Any]:
@@ -381,6 +406,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--timeframes", help="comma-separated timeframes (default: backfill.default_timeframes)")
     p.add_argument("--days", type=int, help="days of history (default: backfill.default_days)")
     p.set_defaults(run=cmd_backfill)
+
+    p = sub.add_parser("import-sentiment", help="import archived Reddit posts and comments (NDJSON)")
+    p.add_argument("paths", nargs="+", help="NDJSON files, one Pushshift or Arctic Shift object per line")
+    p.add_argument("--subreddits", help="comma-separated subreddits to keep (default: sentiment.subreddits)")
+    p.add_argument("--after", help="keep items created on or after this UTC day (YYYY-MM-DD)")
+    p.add_argument("--before", help="keep items created before this UTC day (YYYY-MM-DD)")
+    p.set_defaults(run=cmd_import_sentiment)
 
     p = sub.add_parser("backtest", help="evaluate a strategy against the gates")
     p.add_argument("strategy")
