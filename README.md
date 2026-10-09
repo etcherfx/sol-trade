@@ -190,6 +190,8 @@ Each section is an object in `config.json`; keys you leave out keep their defaul
 | | `safety_multiplier` | Measured costs are multiplied by this | `1.25` |
 | | `probe_sizes_usd` | Trade sizes `measure-costs` quotes | `[25, 100, 250]` |
 | | `max_sample_age_days` | Older quotes are stale | `14` |
+| | `request_interval_seconds` | Gap between Jupiter requests while measuring; keyless access allows 0.5 a second, a free API key 1 | `2.1` |
+| | `rate_limit_retries` / `rate_limit_backoff_seconds` | HTTP 429 retries, waiting the `Retry-After` header or doubling from the backoff | `4` / `5` |
 | `backfill` | `default_timeframes` / `default_days` | What `backfill` downloads without arguments | `["1h"]` / `730` |
 | | `page_limit` | Bars per exchange request | `100` |
 | `gates` | see [Research pipeline](#research-pipeline) | | |
@@ -401,7 +403,7 @@ Errors name the exact place, e.g. `indicators.fast.fn: unknown fn 'emaa'` or `lo
 The pipeline decides which strategies trade, with evidence for every step. Research uses stored candles and quotes only: backfills, backtests and evaluations make no Solana RPC calls, and every result carries `"rpc": {"calls": 0, "cu": 0}` to prove it.
 
 1. **Backfill** candles with `backfill`; each series is checked for gaps, duplicates and bad bars.
-2. **Measure costs** with `measure-costs`: Jupiter quotes at `costs.probe_sizes_usd` in both directions give a per-size cost curve (times `costs.safety_multiplier`). Tokens without quotes use `costs.default_cost_bps` and are flagged `COSTS_DEFAULT`.
+2. **Measure costs** with `measure-costs`: Jupiter quotes at `costs.probe_sizes_usd` in both directions give a per-size cost curve (times `costs.safety_multiplier`). Requests are paced to Jupiter's rate limit and HTTP 429s are retried, so a full run takes a few seconds per quote. A token with any failed probe makes the command fail (`measure_incomplete`), naming the token, the sizes that were measured and the errors; partial quotes are still stored. Tokens without quotes use `costs.default_cost_bps` and are flagged `COSTS_DEFAULT`.
 3. **Backtest** with `backtest <strategy> <symbol>`. The newest `gates.holdout_days` are held out. The rest runs as one backtest after costs, sliced into `gates.folds` folds, against buy-and-hold and cash. The verdict is `PASS`, `FAIL` or `INSUFFICIENT_EVIDENCE`, with reasons.
 
    Every simulation (backtest, held-out period, paper book) holds the capital the live bot risks, `risk.max_live_capital`, and each entry spends `risk.max_trade_size` times the strategy's `position_size`. Returns and drawdowns are percentages of that capital, the same base the kill switch uses. Buy-and-hold holds the same position size on the same capital.
@@ -438,7 +440,7 @@ Every strategy variant counts: the deflated Sharpe ratio corrects for the number
 | `candidates [--symbol S]` | The pipeline, trials, and whether trading is paused |
 | `promote <strategy> <symbol>` | The transition, or a refusal code (`not_passed`, `costs_unmeasured`, `paper_full`, `not_ready`, `holdout_insufficient`, `holdout_failed`, ...) |
 | `demote <strategy> <symbol> [--reason R]` | The transition; `demote_pending` while the bot still has to sell |
-| `measure-costs [--symbols A,B]` | The cost model per token, from fresh Jupiter quotes |
+| `measure-costs [--symbols A,B]` | The cost model per token, from fresh Jupiter quotes; `measure_incomplete` names any token not fully measured |
 | `status [--healthcheck]` | Bot mode and heartbeat, positions and P&L after costs, paper books, paused, RPC usage today, recorder health, warnings; `--healthcheck` exits 1 without a fresh heartbeat |
 | `report` | `{"text": ...}`: a Discord-ready summary of at most 1,900 characters |
 | `approve <strategy> <symbol>` | Lets paper → live proceed when `require_approval` is on (interactive terminal only) |

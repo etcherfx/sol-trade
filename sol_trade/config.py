@@ -73,6 +73,11 @@ SECTION_DEFAULTS: dict[str, dict[str, Any]] = {
         "probe_sizes_usd": [25, 100, 250],
         # Probes older than this don't count as fresh evidence.
         "max_sample_age_days": 14,
+        # Gap between Jupiter requests while measuring: keyless access allows 0.5 a second
+        # (1.0 suits a free API key). HTTP 429s are retried with doubling waits.
+        "request_interval_seconds": 2.1,
+        "rate_limit_retries": 4,
+        "rate_limit_backoff_seconds": 5.0,
     },
     "backfill": {
         "default_timeframes": ["1h"],

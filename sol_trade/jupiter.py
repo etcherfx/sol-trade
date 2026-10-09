@@ -4,6 +4,8 @@ None of these sign anything or touch the Solana RPC.
 """
 
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any, cast
 
 import httpx
@@ -19,6 +21,31 @@ _META_MAX_AGE_SECONDS = 7 * 86400
 
 _http_session = httpx.Client(timeout=10.0)
 
+# Smallest gap between Jupiter requests; 0 except inside paced().
+_pace = {"interval": 0.0, "last": 0.0}
+
+
+@contextmanager
+def paced(interval: float) -> Iterator[None]:
+    """Space this process's Jupiter requests at least ``interval`` seconds apart.
+
+    Jupiter's limit is per plan and shared by the swap, price and token APIs
+    (keyless: 0.5 requests a second over a 60-second window).
+    """
+    previous = _pace["interval"]
+    _pace["interval"] = float(interval)
+    try:
+        yield
+    finally:
+        _pace["interval"] = previous
+
+
+def _wait_turn() -> None:
+    wait = _pace["last"] + _pace["interval"] - time.monotonic()
+    if wait > 0:
+        time.sleep(wait)
+    _pace["last"] = time.monotonic()
+
 
 def _headers() -> dict[str, str]:
     headers = {"Content-Type": "application/json"}
@@ -27,8 +54,11 @@ def _headers() -> dict[str, str]:
     return headers
 
 
-def fetch_prices(mints: list[str]) -> dict[str, float]:
-    """USD prices for mints with one HTTP call; unknown or failed prices are 0."""
+def fetch_prices(mints: list[str], raise_errors: bool = False) -> dict[str, float]:
+    """USD prices for mints with one HTTP call; unknown or failed prices are 0.
+
+    With ``raise_errors`` a failed request raises instead of returning zeros.
+    """
     if not mints:
         return {}
 
@@ -36,10 +66,13 @@ def fetch_prices(mints: list[str]) -> dict[str, float]:
     params = {"ids": ",".join(unique_mints)}
 
     try:
+        _wait_turn()
         response = _http_session.get(PRICE_API, params=params)
         response.raise_for_status()
         response_json = cast(dict[str, Any], response.json())
     except httpx.HTTPStatusError as e:
+        if raise_errors:
+            raise
         if e.response is not None and e.response.status_code == 401:
             log_general.error(
                 "401 Unauthorized fetching prices from the lite API; "
@@ -48,7 +81,9 @@ def fetch_prices(mints: list[str]) -> dict[str, float]:
         else:
             log_general.error(f"HTTP error fetching prices for {unique_mints}: {e}")
         return dict.fromkeys(unique_mints, 0.0)
-    except Exception as e:  # noqa: BLE001 - network errors
+    except Exception as e:  # network errors
+        if raise_errors:
+            raise
         log_general.error(f"failed to fetch prices for {unique_mints}: {e}")
         return dict.fromkeys(unique_mints, 0.0)
 
@@ -74,6 +109,7 @@ def token_meta(mint: str, refresh: bool = False) -> dict[str, Any] | None:
     if cached and not refresh and time.time() - cached.get("fetched_at", 0) < _META_MAX_AGE_SECONDS:
         return cached
     try:
+        _wait_turn()
         response = _http_session.get(TOKENS_API, params={"query": mint}, headers=_headers())
         response.raise_for_status()
         results = response.json()
@@ -110,6 +146,7 @@ def decimals(mint: str) -> int:
 
 def quote(input_mint: str, output_mint: str, amount: int) -> dict[str, Any]:
     """A quote-only ``/order`` (no ``taker``): nothing is built, signed or sent."""
+    _wait_turn()
     response = _http_session.get(
         f"{config().jup_api}/order",
         params={"inputMint": input_mint, "outputMint": output_mint, "amount": amount},

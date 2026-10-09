@@ -1,5 +1,6 @@
 """The cost model: probes, interpolation and the default."""
 
+import httpx
 import pytest
 
 from sol_trade import costs, jupiter
@@ -66,7 +67,7 @@ def test_measure_stores_probes_and_builds_the_model(monkeypatch):
 
     monkeypatch.setattr(jupiter, "quote", fake_quote)
     monkeypatch.setattr(
-        jupiter, "fetch_prices", lambda mints: {cfg.primary_mint: 1.0, "MINT": 2.0, cfg.sol_mint: 200.0}
+        jupiter, "fetch_prices", lambda mints, **_: {cfg.primary_mint: 1.0, "MINT": 2.0, cfg.sol_mint: 200.0}
     )
     monkeypatch.setattr(jupiter, "decimals", lambda mint: 6)
 
@@ -94,3 +95,73 @@ def test_a_skewed_reference_price_cancels_between_legs():
     write_json_atomic(costs.COSTS_PATH, {"TKN": {"samples": samples, "measured_ts": 0}})
     safety = config().costs["safety_multiplier"]
     assert costs.model_for("TKN").bps(100) == pytest.approx(10.0 * safety)  # the round trip is 20 bps
+
+
+def _too_many(retry_after=None):
+    headers = {"retry-after": retry_after} if retry_after else {}
+    response = httpx.Response(429, headers=headers, request=httpx.Request("GET", "https://api.jup.ag/swap/v2/order"))
+    return httpx.HTTPStatusError("429 Too Many Requests", request=response.request, response=response)
+
+
+@pytest.fixture
+def jupiter_fakes(monkeypatch):
+    """Quotes that answer 20 bps unless a test makes them fail; sleeps are recorded, not slept."""
+    cfg = config()
+    state = {"fail": {}, "calls": 0}
+    slept = []
+
+    def fake_quote(input_mint, output_mint, amount):
+        state["calls"] += 1
+        side = "buy" if input_mint == cfg.primary_mint else "sell"
+        mint = output_mint if side == "buy" else input_mint
+        failures = state["fail"].get(mint)
+        if failures:
+            error = failures.pop(0) if isinstance(failures, list) else failures
+            if error is not None:
+                raise error
+        return _quote(100, 99.8)
+
+    monkeypatch.setattr(jupiter, "quote", fake_quote)
+    monkeypatch.setattr(jupiter, "fetch_prices", lambda mints, **_: dict.fromkeys(mints, 1.0))
+    monkeypatch.setattr(jupiter, "decimals", lambda mint: 6)
+    monkeypatch.setattr(costs.time, "sleep", slept.append)
+    return state, slept
+
+
+def test_rate_limited_probes_are_retried_with_backoff(jupiter_fakes):
+    state, slept = jupiter_fakes
+    state["fail"]["MINT"] = [_too_many(), _too_many("7")]  # the first two requests
+
+    record = costs.measure("TKN", "MINT", [25, 100])
+
+    assert record["complete"] and record["errors"] == []
+    assert len(record["samples"]) == 4
+    assert slept == [5.0, 7.0]  # doubling backoff from rate_limit_backoff_seconds, or Retry-After
+
+
+def test_a_probe_that_stays_rate_limited_is_reported(jupiter_fakes):
+    state, slept = jupiter_fakes
+    retries = config().costs["rate_limit_retries"]
+    state["fail"]["MINT"] = [None, None] + [_too_many()] * (retries + 1)  # $25 works, $100 buy never does
+
+    record = costs.measure("TKN", "MINT", [25, 100])
+
+    assert not record["complete"]
+    assert [(s["side"], s["size_usd"]) for s in record["samples"]] == [("buy", 25), ("sell", 25), ("sell", 100)]
+    assert record["errors"][0].startswith("buy $100: HTTPStatusError: 429")
+    assert slept == [5.0 * 2**i for i in range(retries)]
+
+
+def test_jupiter_requests_are_spaced_while_paced(monkeypatch):
+    clock = {"now": 100.0}
+    waits = []
+    monkeypatch.setattr(jupiter.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(jupiter.time, "sleep", lambda s: waits.append(s) or clock.update(now=clock["now"] + s))
+    monkeypatch.setitem(jupiter._pace, "last", 0.0)
+    with jupiter.paced(2.0):
+        jupiter._wait_turn()
+        clock["now"] += 0.5
+        jupiter._wait_turn()
+        jupiter._wait_turn()
+    jupiter._wait_turn()  # unpaced again: the bot never waits
+    assert waits == [pytest.approx(1.5), pytest.approx(2.0)]

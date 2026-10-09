@@ -180,9 +180,25 @@ def cmd_measure_costs(args: argparse.Namespace) -> dict[str, Any]:
         except Exception as e:  # noqa: BLE001 - reported per symbol
             problems.append({"symbol": symbol, "error": f"{type(e).__name__}: {e}"})
             continue
-        measured.append({"symbol": symbol, "model": costs.model_for(symbol).as_dict(), "samples": record["samples"]})
+        model = costs.model_for(symbol)
+        if record["samples"]:
+            measured.append({"symbol": symbol, "model": model.as_dict(), "samples": record["samples"]})
+        if record["errors"] or model.source != "measured":
+            probed = sorted({s["size_usd"] for s in record["samples"]})
+            problems.append({
+                "symbol": symbol,
+                "error": "not every probe succeeded" if record["samples"] else "every probe failed; nothing stored",
+                "measured_sizes_usd": probed,
+                "model_source": model.source,
+                "errors": record["errors"],
+            })
     if problems:
-        raise CliError("measure_incomplete", f"{len(problems)} of {len(symbols)} symbols failed", [*problems, {"measured": measured}])
+        raise CliError(
+            "measure_incomplete",
+            f"{len(problems)} of {len(symbols)} symbols were not fully measured: "
+            + ", ".join(p["symbol"] for p in problems),
+            [*problems, {"measured": measured}],
+        )
     return {"costs": measured}
 
 

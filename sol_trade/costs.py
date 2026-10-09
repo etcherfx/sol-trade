@@ -15,9 +15,12 @@ flagged ``COSTS_DEFAULT``.
 
 import itertools
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, TypeVar
+
+import httpx
 
 from sol_trade import jupiter
 from sol_trade.config import config
@@ -26,6 +29,28 @@ from sol_trade.utils import load_json_data, write_json_atomic
 
 COSTS_PATH = "data/costs.json"
 _LAMPORTS_PER_SOL = 1e9
+_T = TypeVar("_T")
+
+
+def _rate_limited(error: Exception) -> bool:
+    return isinstance(error, httpx.HTTPStatusError) and error.response.status_code == 429
+
+
+def _retrying(call: Callable[[], _T]) -> _T:
+    """Run a Jupiter request, waiting out HTTP 429s with exponential backoff (or ``Retry-After``)."""
+    c = config().costs
+    retries, backoff = int(c["rate_limit_retries"]), float(c["rate_limit_backoff_seconds"])
+    for attempt in range(retries + 1):
+        try:
+            return call()
+        except httpx.HTTPStatusError as e:
+            if not _rate_limited(e) or attempt == retries:
+                raise
+            header = e.response.headers.get("retry-after", "")
+            wait = float(header) if header.replace(".", "", 1).isdigit() else backoff * 2**attempt
+            log_general.info(f"Jupiter rate limit; retrying in {wait:g} s")
+            time.sleep(wait)
+    raise AssertionError("unreachable")
 
 
 def _sample(response: dict[str, Any], side: str, size_usd: float, sol_usd: float) -> dict[str, Any]:
@@ -51,10 +76,21 @@ def _sample(response: dict[str, Any], side: str, size_usd: float, sol_usd: float
 
 
 def measure(symbol: str, mint: str, sizes_usd: list[float] | None = None) -> dict[str, Any]:
-    """Probe Jupiter quotes for ``symbol`` and store them; returns the stored record."""
+    """Probe Jupiter quotes for ``symbol`` and store them; returns the record.
+
+    Requests are spaced ``costs.request_interval_seconds`` apart and HTTP 429s
+    are retried. A probe that still fails is listed in ``errors`` and the
+    record is marked incomplete; whatever was measured is stored.
+    """
     cfg = config()
     sizes = [float(s) for s in (sizes_usd or cfg.costs["probe_sizes_usd"])]
-    prices = jupiter.fetch_prices([cfg.primary_mint, mint, cfg.sol_mint])
+    with jupiter.paced(float(cfg.costs["request_interval_seconds"])):
+        return _measure(symbol, mint, sizes)
+
+
+def _measure(symbol: str, mint: str, sizes: list[float]) -> dict[str, Any]:
+    cfg = config()
+    prices = _retrying(lambda: jupiter.fetch_prices([cfg.primary_mint, mint, cfg.sol_mint], raise_errors=True))
     primary_usd, token_usd, sol_usd = (prices.get(m, 0.0) for m in (cfg.primary_mint, mint, cfg.sol_mint))
     if primary_usd <= 0 or token_usd <= 0:
         raise ValueError(f"no USD price for {symbol} or {cfg.primary_mint_symbol}; cannot size probes")
@@ -69,7 +105,7 @@ def measure(symbol: str, mint: str, sizes_usd: list[float] | None = None) -> dic
         )
         for side, input_mint, output_mint, amount in legs:
             try:
-                response = jupiter.quote(input_mint, output_mint, amount)
+                response = _retrying(lambda i=input_mint, o=output_mint, a=amount: jupiter.quote(i, o, a))
             except Exception as e:  # noqa: BLE001 - record and continue with the other probes
                 errors.append(f"{side} ${size:g}: {type(e).__name__}: {e}")
                 continue
@@ -84,6 +120,7 @@ def measure(symbol: str, mint: str, sizes_usd: list[float] | None = None) -> dic
         "measured_ts": time.time(),
         "samples": samples,
         "errors": errors,
+        "complete": not errors,
     }
     if samples:
         data = load_json_data(COSTS_PATH, {})

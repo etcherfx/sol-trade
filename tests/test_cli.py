@@ -122,3 +122,43 @@ def test_unexpected_errors_still_print_json(monkeypatch):
     monkeypatch.setattr(cli, "cmd_status", boom)
     code, payload = _run("status")
     assert code == 1 and payload["error"] == "internal" and "kaput" in payload["message"]
+
+
+def test_measure_costs_names_every_token_it_could_not_measure(monkeypatch):
+    """Keyless Jupiter rate limits: tokens that got no quotes used to come back ok with the default cost."""
+    import httpx
+
+    from sol_trade import costs, jupiter
+    from sol_trade.config import config
+
+    cfg = config()
+    mints = {"SOL": "SOLMINT", "BONK": "BONKMINT", "WIF": "WIFMINT"}
+    monkeypatch.setattr(cfg, "token_mints", mints)
+    monkeypatch.setattr(costs.time, "sleep", lambda _s: None)
+    response = httpx.Response(429, request=httpx.Request("GET", "https://api.jup.ag/swap/v2/order"))
+    limited = httpx.HTTPStatusError("429 Too Many Requests", request=response.request, response=response)
+    seen = {}
+
+    def fake_quote(input_mint, output_mint, amount):
+        mint = output_mint if input_mint == cfg.primary_mint else input_mint
+        seen[mint] = seen.get(mint, 0) + 1
+        if mint == "WIFMINT" or (mint == "BONKMINT" and seen[mint] > 2):
+            raise limited
+        return {"inUsdValue": 100, "outUsdValue": 99.8, "gasless": True, "outAmount": "1"}
+
+    monkeypatch.setattr(jupiter, "quote", fake_quote)
+    monkeypatch.setattr(jupiter, "fetch_prices", lambda mints, **_: dict.fromkeys(mints, 1.0))
+    monkeypatch.setattr(jupiter, "decimals", lambda mint: 6)
+
+    code, payload = _run("measure-costs", "--symbols", "SOL,BONK,WIF")
+
+    assert code == 1 and payload["ok"] is False
+    assert payload["error"] == "measure_incomplete"
+    assert payload["message"].endswith("BONK, WIF")
+    problems = {d["symbol"]: d for d in payload["details"] if "symbol" in d}
+    assert set(problems) == {"BONK", "WIF"}
+    assert problems["BONK"]["measured_sizes_usd"] == [25.0]
+    assert problems["WIF"]["model_source"] == "default"
+    assert problems["WIF"]["error"] == "every probe failed; nothing stored"
+    measured = payload["details"][-1]["measured"]
+    assert [m["symbol"] for m in measured] == ["SOL", "BONK"]
