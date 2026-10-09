@@ -79,7 +79,7 @@ def test_backtest_and_live_loop_trade_identically(monkeypatch, seed):
     assert {"stoploss", "takeprofit", "trailing_stop"} <= {t.reason for t in sim.trades}
     assert _trades(live, last_closed) == _trades(sim, last_closed)
     assert _fills(live, last_closed) == _fills(sim, last_closed)
-    stored = history.load_bars("TKN/QUOTE", "1m")
+    stored = history.load_bars(history.source_for("TKN"), "1m")
     assert int(stored["ts"].iat[-1]) == last_closed  # the forming bar was never stored
 
 

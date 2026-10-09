@@ -28,8 +28,7 @@ def stored_strategy(tmp_path):
     folder.mkdir()
     (folder / "swing.json").write_text(json.dumps(SPEC))
     frame = _market()
-    pair = history.pair_for("TKN")
-    history._store(pair, "1h", [history.Bar(*row) for row in frame.itertuples(index=False)])
+    history._store(history.source_for("TKN"), "1h", [history.Bar(*row) for row in frame.itertuples(index=False)])
     return "swing"
 
 

@@ -191,7 +191,7 @@ def _book_summary(name: str, capital: float | None = None) -> dict[str, Any]:
     unrealized = 0.0
     for _, position in ledger.open_positions(name):
         timeframe = _position_timeframe(position.symbol)
-        last = history.load_bars(history.pair_for(position.symbol), timeframe, limit=1) if timeframe else None
+        last = history.load_bars(history.source_for(position.symbol), timeframe, limit=1) if timeframe else None
         price = float(last["close"].iat[-1]) if last is not None and len(last) else None
         value = position.size * price if price else None
         if value is not None:

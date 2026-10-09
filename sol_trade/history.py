@@ -1,7 +1,7 @@
 """Historical candles: paged backfill, incremental updates and data checks.
 
-Bars live in the SQLite candle store (``candles_path``) keyed by pair,
-timeframe and open time. Only closed bars are stored: a bar whose period
+Bars live in the SQLite candle store (``candles_path``) keyed by exchange,
+pair, timeframe and open time; every read selects the configured source. Only closed bars are stored: a bar whose period
 hasn't ended yet (the forming bar) is returned separately and never written.
 None of this touches the Solana RPC.
 """
@@ -80,6 +80,11 @@ class Source:
     def as_dict(self) -> dict[str, Any]:
         return {"exchange": self.exchange, "pair": self.pair, "price_proxy": self.proxy}
 
+    @classmethod
+    def parse(cls, exchange: str, pair: str) -> "Source":
+        base, _, quote = pair.partition("/")
+        return cls(exchange, base, quote)
+
 
 def source_for(symbol: str) -> Source:
     """The token's candle source: ``token_exchanges[symbol]`` over ``data_exchange`` and the primary token.
@@ -99,10 +104,6 @@ def source_for(symbol: str) -> Source:
     return Source(exchange, symbol, quote)
 
 
-def pair_for(symbol: str) -> str:
-    return source_for(symbol).pair
-
-
 
 def _iso(ts: int | None) -> str | None:
     return None if ts is None else datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -120,19 +121,19 @@ def check_timeframe(exchange: Any, timeframe: str) -> None:
 # ------------------------------------------------------------------- store
 
 
-def _stored_range(pair: str, timeframe: str) -> tuple[int | None, int | None, int]:
+def _stored_range(source: Source, timeframe: str) -> tuple[int | None, int | None, int]:
     conn = data_source._connect()
     try:
         row = conn.execute(
-            "SELECT MIN(ts), MAX(ts), COUNT(*) FROM candles WHERE symbol = ? AND timeframe = ?",
-            (pair, timeframe),
+            "SELECT MIN(ts), MAX(ts), COUNT(*) FROM candles WHERE exchange = ? AND symbol = ? AND timeframe = ?",
+            (source.exchange, source.pair, timeframe),
         ).fetchone()
     finally:
         conn.close()
     return row[0], row[1], int(row[2] or 0)
 
 
-def _store(pair: str, timeframe: str, bars: list[Bar]) -> None:
+def _store(source: Source, timeframe: str, bars: list[Bar]) -> None:
     if not bars:
         return
     conn = data_source._connect()
@@ -140,11 +141,11 @@ def _store(pair: str, timeframe: str, bars: list[Bar]) -> None:
         conn.executemany(
             """
             INSERT OR REPLACE INTO candles
-                (symbol, timeframe, ts, open, high, low, close, volume, totalvolume)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (exchange, symbol, timeframe, ts, open, high, low, close, volume, totalvolume)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                (pair, timeframe, b.ts, b.open, b.high, b.low, b.close, b.volume, b.volume)
+                (source.exchange, source.pair, timeframe, b.ts, b.open, b.high, b.low, b.close, b.volume, b.volume)
                 for b in bars
             ],
         )
@@ -154,15 +155,16 @@ def _store(pair: str, timeframe: str, bars: list[Bar]) -> None:
 
 
 def load_bars(
-    pair: str, timeframe: str, start: int | None = None, end: int | None = None, limit: int | None = None
+    source: Source, timeframe: str, start: int | None = None, end: int | None = None, limit: int | None = None
 ) -> pd.DataFrame:
-    """Stored closed bars in ``[start, end)`` (seconds), oldest first.
+    """Stored closed bars of ``source`` in ``[start, end)`` (seconds), oldest first.
 
     With ``limit`` the newest ``limit`` bars of that range are returned.
     Columns: ts, open, high, low, close, volume.
     """
     params = (
-        pair,
+        source.exchange,
+        source.pair,
         timeframe,
         int(start) if start is not None else -(2**62),
         int(end) if end is not None else 2**62,
@@ -174,7 +176,7 @@ def load_bars(
             """
             SELECT ts, open, high, low, close, volume FROM (
                 SELECT * FROM candles
-                WHERE symbol = ? AND timeframe = ? AND ts >= ? AND ts < ?
+                WHERE exchange = ? AND symbol = ? AND timeframe = ? AND ts >= ? AND ts < ?
                 ORDER BY ts DESC LIMIT ?
             ) ORDER BY ts
             """,
@@ -269,10 +271,10 @@ def _first_page_with_data(
     return found
 
 
-def _validate(pair: str, timeframe: str, report: SeriesReport, start: int | None, end: int | None) -> None:
+def _validate(source: Source, timeframe: str, report: SeriesReport, start: int | None, end: int | None) -> None:
     period = timeframe_seconds(timeframe)
-    frame = load_bars(pair, timeframe, start, end)
-    report.total = _stored_range(pair, timeframe)[2]
+    frame = load_bars(source, timeframe, start, end)
+    report.total = _stored_range(source, timeframe)[2]
     if frame.empty:
         return
     ts = frame["ts"].to_numpy()
@@ -331,7 +333,8 @@ def update_pair(
     now = time.time() if now is None else now
     until = int(now // period) * period  # open time of the forming bar
     report = SeriesReport(pair, timeframe, exchange_id)
-    first, last, count_before = _stored_range(pair, timeframe)
+    source = Source.parse(exchange_id, pair)
+    first, last, count_before = _stored_range(source, timeframe)
 
     wanted_start = None
     if days:
@@ -351,11 +354,11 @@ def update_pair(
     forming: Bar | None = None
     for since, stop in ranges:
         bars, seen_forming = _fetch_range(exchange, pair, timeframe, since, stop, report)
-        _store(pair, timeframe, bars)
+        _store(source, timeframe, bars)
         forming = seen_forming or forming
-    report.bars_added = _stored_range(pair, timeframe)[2] - count_before
+    report.bars_added = _stored_range(source, timeframe)[2] - count_before
     if validate:
-        _validate(pair, timeframe, report, wanted_start, until)
+        _validate(source, timeframe, report, wanted_start, until)
     return report, forming
 
 
@@ -415,7 +418,7 @@ def window_pair(
         raise
     except Exception as e:  # noqa: BLE001 - network errors fall back to the store
         log_general.warning(f"candle update failed for {pair} {timeframe}: {e}; using stored bars")
-    frame = load_bars(pair, timeframe, end=int(now // period) * period, limit=lookback)
+    frame = load_bars(Source.parse(exchange_id, pair), timeframe, end=int(now // period) * period, limit=lookback)
     if frame.empty or now - (int(frame["ts"].iat[-1]) + period) > 3 * period:
         raise ConnectionError(f"no fresh {timeframe} candles for {pair}")
     return frame, forming

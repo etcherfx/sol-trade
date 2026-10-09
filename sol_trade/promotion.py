@@ -473,7 +473,7 @@ def paper_book_state(candidate: Candidate) -> dict[str, Any]:
 
 
 def _last_close(candidate: Candidate) -> float | None:
-    frame = history.load_bars(history.pair_for(candidate.symbol), candidate.timeframe, limit=1)
+    frame = history.load_bars(history.source_for(candidate.symbol), candidate.timeframe, limit=1)
     return float(frame["close"].iat[-1]) if len(frame) else None
 
 
@@ -570,7 +570,7 @@ def _replay_comparison(
     first = meta.get("first_bar_ts")
     if first is None or last_bar_ts is None:
         return None, None
-    frame = history.load_bars(history.pair_for(candidate.symbol), candidate.timeframe)
+    frame = history.load_bars(history.source_for(candidate.symbol), candidate.timeframe)
     ts = frame["ts"].to_numpy()
     start, end = int(ts.searchsorted(first)), int(ts.searchsorted(last_bar_ts, side="right"))
     if start < strategy.lookback - 1 or end <= start:

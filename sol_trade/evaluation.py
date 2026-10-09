@@ -198,7 +198,7 @@ def _cost_flags(model: CostModel, symbol: str) -> list[str]:
 
 
 def load_frame(strategy: Strategy, symbol: str) -> pd.DataFrame:
-    return history.load_bars(history.source_for(symbol).pair, strategy.timeframe)
+    return history.load_bars(history.source_for(symbol), strategy.timeframe)
 
 
 def evaluate(

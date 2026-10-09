@@ -1,5 +1,7 @@
 """History: paged backfill, incremental updates, the forming bar and data checks."""
 
+from pathlib import Path
+
 import pytest
 
 from sol_trade import data_source, history
@@ -32,7 +34,7 @@ def test_backfill_pages_and_skips_the_forming_bar(market):
     assert report["total"] == 192
     assert report["pages"] >= 4  # 50 bars per page
     assert report["gaps"] == 0
-    frame = history.load_bars("TKN/QUOTE", "1h")
+    frame = history.load_bars(history.source_for("TKN"), "1h")
     assert int(frame["ts"].iat[-1]) == exchange.t0 + 249 * PERIOD  # newest closed bar
     assert len(frame) == 192
 
@@ -43,12 +45,12 @@ def test_incremental_update_repairs_partial_bars(market):
     history.update("TKN", "1h", days=2, now=clock["now"])
     # A partial bar stored by an older version: wrong close for the newest bar.
     newest = exchange.t0 + 99 * PERIOD
-    history._store("TKN/QUOTE", "1h", [history.Bar(newest, 1, 1, 1, 1, 1)])
+    history._store(history.source_for("TKN"), "1h", [history.Bar(newest, 1, 1, 1, 1, 1)])
 
     clock["now"] = exchange.t0 + 101 * PERIOD + 10
     report, forming = history.update("TKN", "1h", now=clock["now"])
 
-    frame = history.load_bars("TKN/QUOTE", "1h")
+    frame = history.load_bars(history.source_for("TKN"), "1h")
     repaired = frame[frame["ts"] == newest]
     assert float(repaired["close"].to_numpy()[0]) == pytest.approx(exchange.ticks[99][-1])
     assert report.bars_added == 1
@@ -73,10 +75,11 @@ def test_report_counts_gaps_duplicates_and_bad_bars(market):
     bars = [history.Bar(t + i * PERIOD, 10, 11, 9, 10, 1) for i in range(10) if i not in (3, 4, 7)]
     bars.append(history.Bar(t + 10 * PERIOD, 10, 9, 11, 10, 1))  # high below low
     bars.append(history.Bar(t + 11 * PERIOD + 5, 10, 11, 9, 10, 1))  # misaligned
-    history._store("BAD/QUOTE", "1h", bars)
+    source = history.Source("fake", "BAD", "QUOTE")
+    history._store(source, "1h", bars)
     report = history.SeriesReport("BAD/QUOTE", "1h", "fake")
 
-    history._validate("BAD/QUOTE", "1h", report, None, None)
+    history._validate(source, "1h", report, None, None)
 
     assert report.gaps == 2
     assert report.largest_gap_bars == 2
@@ -109,8 +112,8 @@ def test_candle_store_allows_a_concurrent_writer(market):
     try:
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         conn.execute("BEGIN IMMEDIATE")  # another process holding the write lock briefly
-        conn.execute("INSERT INTO candles VALUES ('X/Y', '1h', 0, 1, 1, 1, 1, 1, 1)")
-        frame = history.load_bars("X/Y", "1h")  # readers aren't blocked by a writer
+        conn.execute("INSERT INTO candles VALUES ('x', 'X/Y', '1h', 0, 1, 1, 1, 1, 1, 1)")
+        frame = history.load_bars(history.Source("x", "X", "Y"), "1h")  # readers aren't blocked by a writer
         assert frame.empty
     finally:
         conn.rollback()
@@ -162,7 +165,7 @@ def test_a_token_can_take_its_candles_from_another_quote_and_exchange(market, mo
     assert set(asked) == {"other"}
     assert {call[0] for call in exchange.calls} == {"TKN/USDT"}
     assert len(frame) == 30
-    assert history.load_bars("TKN/QUOTE", "1h").empty  # nothing under the primary pair
+    assert history.load_bars(history.Source("other", "TKN", "QUOTE"), "1h").empty  # nothing under the primary pair
 
 
 def test_the_default_source_is_the_primary_pair_on_the_data_exchange(market, monkeypatch):
@@ -170,3 +173,62 @@ def test_the_default_source_is_the_primary_pair_on_the_data_exchange(market, mon
     assert history.source_for("TKN") == history.Source("mexc", "TKN", "QUOTE")
     assert not history.source_for("TKN").proxy
     assert history.source_for("OTHER") == history.Source(config().data_exchange, "OTHER", "QUOTE")
+
+
+def test_switching_a_tokens_exchange_never_mixes_two_venues(market, monkeypatch):
+    """Changing token_exchanges used to write the new venue's bars over the old one's rows."""
+    okx, clock = market
+    coinbase = FakeExchange(make_ticks(300, seed=9, start=50.0), PERIOD, lambda: clock["now"])
+    venues = {"okx": okx, "coinbase": coinbase}
+    monkeypatch.setattr(data_source, "get_exchange", lambda exchange_id=None: venues[exchange_id])
+    clock["now"] = okx.t0 + 250 * PERIOD + 600
+
+    monkeypatch.setattr(config(), "token_exchanges", {"TKN": "okx"})
+    history.backfill(["TKN"], ["1h"], days=3, now=clock["now"])
+    okx_closes = history.load_bars(history.source_for("TKN"), "1h")["close"].to_numpy()
+    monkeypatch.setattr(config(), "token_exchanges", {"TKN": "coinbase"})
+    report = history.backfill(["TKN"], ["1h"], days=3, now=clock["now"])[0]
+
+    assert report["bars_added"] == 72  # a fresh series, not a rewrite of okx's rows
+    coinbase_closes = history.load_bars(history.source_for("TKN"), "1h")["close"].to_numpy()
+    assert coinbase_closes == pytest.approx([bar[-1] for bar in coinbase.ticks[178:250]])
+    kept = history.load_bars(history.Source("okx", "TKN", "QUOTE"), "1h")["close"].to_numpy()
+    assert kept == pytest.approx(okx_closes)
+    assert kept == pytest.approx([bar[-1] for bar in okx.ticks[178:250]])
+
+
+def test_a_store_from_before_exchange_keys_is_migrated(monkeypatch):
+    """Legacy rows are tagged with the exchange the config reads them from, and kept."""
+    import sqlite3
+
+    import pandas as pd
+
+    from tests.test_evaluation import SOL_6H
+
+    monkeypatch.setattr(config(), "primary_mint_symbol", "USDC")
+    monkeypatch.setattr(config(), "token_exchanges", {"SOL": "coinbase", "JUP": {"exchange": "okx", "quote": "USDT"}})
+    real = pd.read_csv(SOL_6H).tail(500)
+    path = config().candles_path
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    legacy = sqlite3.connect(path)
+    legacy.execute(
+        """CREATE TABLE candles (symbol TEXT NOT NULL, timeframe TEXT NOT NULL, ts INTEGER NOT NULL, open REAL,
+           high REAL, low REAL, close REAL, volume REAL, totalvolume REAL, PRIMARY KEY (symbol, timeframe, ts))"""
+    )
+    rows = [(r.ts, r.open, r.high, r.low, r.close, r.volume, r.volume) for r in real.itertuples(index=False)]
+    legacy.executemany("INSERT INTO candles VALUES ('SOL/USDC', '6h', ?, ?, ?, ?, ?, ?, ?)", rows)
+    legacy.executemany("INSERT INTO candles VALUES ('JUP/USDC', '6h', ?, ?, ?, ?, ?, ?, ?)", rows[:10])
+    legacy.commit()
+    legacy.close()
+
+    frame = history.load_bars(history.source_for("SOL"), "6h")
+
+    assert len(frame) == 500
+    assert frame["close"].to_numpy() == pytest.approx(real["close"].to_numpy())
+    conn = data_source._connect()  # a second open finds the new schema and leaves it be
+    try:
+        tagged = conn.execute("SELECT exchange, symbol, COUNT(*) FROM candles GROUP BY 1, 2 ORDER BY 2").fetchall()
+    finally:
+        conn.close()
+    # JUP's configured source is now JUP/USDT, so its old USDC rows came from data_exchange.
+    assert tagged == [("okx", "JUP/USDC", 10), ("coinbase", "SOL/USDC", 500)]

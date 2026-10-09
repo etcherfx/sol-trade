@@ -167,7 +167,7 @@ Secrets live in the git-ignored `.env` file:
 | `token_strategies` | Per-token strategy overrides, e.g. `{"SOL": "default", "JUP": "momentum"}` | `{}` |
 | `token_exchanges` | Per-token candle sources: an exchange id, e.g. `{"POPCAT": "mexc"}`, or an exchange and quote, e.g. `{"JUP": {"exchange": "okx", "quote": "USDT"}}`; missing = `data_exchange` and the primary token | `{}` |
 | `data_exchange` | Exchange used for candlestick data (via ccxt) | `okx` |
-| `candles_path` | Local SQLite store for candlestick history | `data/candles.db` |
+| `candles_path` | Local SQLite store for candlestick history, keyed by exchange and pair | `data/candles.db` |
 | `research_db_path` | Positions, trades, trials and the pipeline | `data/research.db` |
 
 ### Sections
@@ -258,7 +258,7 @@ An entry can also name the quote token of the candle pair, for when the pair in 
 
 Backfills, backtests, paper books and the live loop all read the same configured series, so research and live trading see the same bars. Swaps still trade the token against the primary mint through Jupiter. A different quote is a **price proxy**: JUP/USDT stands in for JUP/USDC, which holds only while the two quotes trade at par, so `backtest` flags those results `PRICE_PROXY`. Costs come from Jupiter quotes in the primary token either way.
 
-Both settings hot-reload, but `data_exchange` itself is structural — changing it still requires a restart. Each exchange client is created once and reused; candle history is keyed by symbol, so switching a token's exchange starts fresh data for it.
+Both settings hot-reload, but `data_exchange` itself is structural — changing it still requires a restart. Each exchange client is created once and reused. The candle store keys history by exchange and pair, so switching a token's source starts a fresh series (run `backfill`) and never mixes two venues' bars; reads always use the configured source. A store from an older version is migrated on first use, each pair tagged with the exchange the config reads it from at that moment.
 
 ### Changing tokens while running
 
