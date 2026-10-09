@@ -1,0 +1,15 @@
+.git
+.github
+.venv
+.pytest_cache
+.ruff_cache
+**/__pycache__
+dist
+tests
+packaging
+data
+logs
+config
+strategies
+config.json
+.env

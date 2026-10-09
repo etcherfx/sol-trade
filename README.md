@@ -96,6 +96,44 @@ The bot runs inside a full-screen terminal UI:
 
 `Tab` cycles through the screens; `q` or `Ctrl-C` quits. The bot keeps trading in the background while you browse the UI.
 
+### Headless and Docker
+
+`--headless` runs without the terminal UI: logs go to stdout as JSON lines (and to the log files), the bot rewrites `data/status.json` every cycle, and `SIGTERM` or `Ctrl-C` stops it cleanly. `SOLTRADE_LOG_DIR` moves the log files.
+
+```bash
+uv run main.py --dry-run --headless
+```
+
+The repo and the release archives include a `Dockerfile` and `compose.yaml`. The container runs `main.py --headless --dry-run` unless you replace its command, and its healthcheck is `status --healthcheck`. Put `config.json` (and `.env` if you trade live) in a `config/` folder next to `compose.yaml`, then:
+
+```bash
+docker compose up -d --build
+```
+
+| Mount | Holds |
+| --- | --- |
+| `./config` → `/config` | `config.json` and `.env`; a folder, because the pipeline rewrites `config.json` atomically |
+| `./strategies` → `/app/strategies` | Your JSON strategies |
+| `./data` → `/app/data` | Candles, positions, the pipeline, recordings, the heartbeat |
+| `./logs` → `/app/logs` | Log files |
+
+To trade real money, set `command: []` in `compose.yaml`. Run CLI commands inside the container with `docker compose exec soltrade python -m sol_trade.cli status`.
+
+**Unraid:** copy the folder to a share (for example `/mnt/user/appdata/sol-trade`), set `PUID=99` and `PGID=100` in the environment (or an `.env` file next to `compose.yaml`) so files belong to `nobody:users`, and start it with the Compose Manager plugin or `docker compose up -d --build` in that folder.
+
+### RPC budget
+
+Every Solana RPC call goes through one limiter (`rpc.max_cu_per_second`) and counts against `rpc.daily_cu_budget`; `status` shows today's calls and compute units, also kept in `data/rpc_usage.json`. Research commands and the dry run's virtual book make none. With the defaults, live trading of `T` tokens costs about:
+
+| Source | Compute units per day |
+| --- | --- |
+| Balance reads, reused for 15 minutes | 960 × (T + 1) |
+| Dashboard holdings, every 10 minutes (`holdings_refresh_seconds`; 0 turns it off, also in dry runs with a key) | 2,880 |
+| SOL fee reserve, hourly | 240 × (T + 2) |
+| Whale tracking, if on | 2,880 per wallet at a 5-minute poll |
+
+Three tokens without whale tracking come to about 8,000 CU a day; swaps add a few reads each.
+
 ## Configuration
 
 SolTrade reads its configuration from `config.json` and its credentials from the `.env` file, both in the project root. Copy `config.json.sample` to `config.json` and `.env.sample` to `.env` before the first run. Environment variables take precedence over `config.json`, and `SOLTRADE_CONFIG_PATH` and `SOLTRADE_DOTENV_PATH` point the bot and the CLI at files elsewhere.

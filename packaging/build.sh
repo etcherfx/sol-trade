@@ -7,8 +7,9 @@
 # The repo name; each archive and the folder inside it are named NAME-VERSION.
 repo_name=sol-trade
 # Committed runtime files and folders: code, manifest, lockfile, version pins, sample config
-# files, README and LICENSE. No tests, .github/, AGENTS.md or dev tooling.
-files=(main.py sol_trade strategies pyproject.toml uv.lock .python-version config.json.sample .env.sample README.md LICENSE)
+# files, README, LICENSE and the container files. No tests, .github/, AGENTS.md or dev tooling.
+files=(main.py sol_trade strategies pyproject.toml uv.lock .python-version config.json.sample .env.sample README.md LICENSE
+       Dockerfile compose.yaml .dockerignore)
 # -----------------------------------------------------------------------------
 
 set -euo pipefail

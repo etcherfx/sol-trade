@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import sys
@@ -59,12 +60,13 @@ def setup_file_logging(log_dir: str | os.PathLike | None = None) -> None:
     """Write logs to rotating files; entry points call this, importing never does.
 
     general.log receives both loggers, transaction.log only transactions.
-    Repeated calls are no-ops.
+    The folder is ``log_dir``, else ``SOLTRADE_LOG_DIR``, else the project
+    root's ``logs/``. Repeated calls are no-ops.
     """
     global _file_logging_enabled
     if _file_logging_enabled:
         return
-    log_dir = log_dir or LOG_DIR
+    log_dir = log_dir or os.getenv("SOLTRADE_LOG_DIR") or LOG_DIR
     os.makedirs(log_dir, exist_ok=True)
     file_formatter = logging.Formatter(
         "%(asctime)s     %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
@@ -119,6 +121,30 @@ log_transaction.addHandler(memory_handler)
 def get_recent_logs(limit: int | None = None) -> list[tuple[int, float, str]]:
     """Return the most recent log records for the terminal UI."""
     return memory_handler.snapshot(limit)
+
+
+class JsonLineFormatter(logging.Formatter):
+    """One JSON object per line, for headless runs and container logs."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        entry = {
+            "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S") + f".{int(record.msecs):03d}",
+            "level": record.levelname.lower(),
+            "logger": "transaction" if record.name == "transaction_logger" else "general",
+            "msg": record.getMessage(),
+        }
+        if record.exc_info:
+            entry["exc"] = self.formatException(record.exc_info)
+        return json.dumps(entry)
+
+
+def enable_json_console(level: int = logging.INFO) -> None:
+    """Headless mode: log JSON lines to stdout instead of the muted colored console."""
+    handler = StreamHandler(sys.stdout)
+    handler.setFormatter(JsonLineFormatter())
+    handler.setLevel(level)
+    for logger in (log_general, log_transaction):
+        logger.addHandler(handler)
 
 
 def enable_console_logging() -> None:

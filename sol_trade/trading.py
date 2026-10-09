@@ -622,6 +622,10 @@ def start_trading(state: UIState, dry_run: bool = False) -> None:
     _trading_thread.start()
 
 
+def is_running() -> bool:
+    return _trading_thread is not None and _trading_thread.is_alive()
+
+
 def stop_trading() -> None:
     """Signal the trading thread to stop and wait for it to finish."""
     if _stop_event is not None:

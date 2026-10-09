@@ -21,7 +21,8 @@ uv run pytest          # offline, about 20 seconds
 
 | Path | What lives there |
 |---|---|
-| `main.py` | Entry point: parses `--dry-run`, enables file logging, validates config, starts the trading thread and the UI |
+| `main.py` | Entry point: parses `--dry-run` and `--headless`, enables file logging, validates config, starts the trading thread and the UI (or waits for SIGTERM/SIGINT headless) |
+| `Dockerfile`, `compose.yaml` | Headless container; paper trades unless the command drops `--dry-run` |
 | `sol_trade/config.py` | `Config` singleton (`config()`): `config.json` + `.env`, defaults, validation, hot-reload |
 | `sol_trade/trading.py` | Trading loop: per token `run_symbol` (missed-bar replay, forming bar), `LiveExecutor`, paper books, governor call, heartbeat, P&L baseline, token-change guard |
 | `sol_trade/engine.py` | The one decision core: `Book` (`on_open`/`on_low`/`on_close`), fills, stops, trailing stop, `size_order`, dust |
@@ -55,7 +56,7 @@ uv run pytest          # offline, about 20 seconds
 - **No market literals:** tracked code names no token, mint or pair beyond the native SOL mint and SPL program ids; markets come from `config.json` (the sample may name them).
 - **Strategies:** `strategies/{name}.json`, `name` equal to the file name. A promoted strategy trades from the spec stored with its candidate, and confluence, whale and sentiment filters skip it.
 - **Errors:** a missing or invalid key raises `ValueError` from `Config.keypair`; `main.py` reports it. Library code raises or logs; only entry points call `sys.exit`.
-- **Logging:** importing `sol_trade` writes no files. Entry points call `setup_file_logging()`, which writes to the project-root `logs/`. Console output is muted while the UI owns the terminal.
+- **Logging:** importing `sol_trade` writes no files. Entry points call `setup_file_logging()`, which writes to `SOLTRADE_LOG_DIR` or the project-root `logs/`. Console output is muted while the UI owns the terminal; `--headless` logs JSON lines to stdout instead.
 - **Paths:** `data/` paths (candle store, `research.db`, `sentiment.db`, costs, heartbeat, whale/regime JSON) are relative to the working directory, so the bot and the CLI run from the runtime folder.
 - **Commits:** Conventional Commits (`type(scope): description`) with a DCO sign-off (`git commit -s`).
 

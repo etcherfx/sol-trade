@@ -1,0 +1,15 @@
+services:
+  soltrade:
+    build: .
+    image: sol-trade:local
+    restart: unless-stopped
+    # Paper trading. Replace with `command: []` to trade real money.
+    command: ["--dry-run"]
+    user: "${PUID:-1000}:${PGID:-1000}"
+    volumes:
+      # config.json and .env. A folder, not single files: the pipeline rewrites config.json atomically.
+      - ./config:/config
+      - ./strategies:/app/strategies
+      - ./data:/app/data
+      - ./logs:/app/logs
+    stop_grace_period: 30s
