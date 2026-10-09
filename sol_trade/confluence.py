@@ -4,26 +4,10 @@ Adjusts position sizing based on whale signals, market regime,
 and sentiment circuit breaker state.
 """
 
-import pandas as pd
-
 from sol_trade.config import config
 from sol_trade.market_regime import get_position_modifier
 from sol_trade.sentiment import is_market_crash, is_token_blocked
 from sol_trade.whale_tracker import get_whale_signal
-
-
-def _is_protective_exit(df: "pd.DataFrame") -> bool:
-    """True when the last bar hit a stop-loss, take-profit, or trailing stop."""
-    last = df.iloc[-1]
-    if "stoploss" in df.columns and pd.notna(last["stoploss"]) and last["close"] <= last["stoploss"]:
-        return True
-    if "takeprofit" in df.columns and pd.notna(last["takeprofit"]) and last["close"] >= last["takeprofit"]:
-        return True
-    return (
-        "trailing_stoploss" in df.columns
-        and pd.notna(last["trailing_stoploss"])
-        and last["close"] <= last["trailing_stoploss"]
-    )
 
 
 def evaluate_buy_confluence(token_symbol: str) -> dict[str, object]:

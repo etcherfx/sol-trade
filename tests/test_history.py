@@ -1,0 +1,104 @@
+"""History: paged backfill, incremental updates, the forming bar and data checks."""
+
+import pytest
+
+from sol_trade import data_source, history
+from sol_trade.config import config
+from tests.fakes import FakeExchange, make_ticks
+
+PERIOD = 3600
+
+
+@pytest.fixture
+def market(monkeypatch):
+    ticks = make_ticks(300, seed=5)
+    clock = {"now": 0.0}
+    exchange = FakeExchange(ticks, PERIOD, lambda: clock["now"])
+    monkeypatch.setattr(data_source, "get_exchange", lambda *_args, **_kwargs: exchange)
+    monkeypatch.setattr(config(), "primary_mint_symbol", "QUOTE")
+    monkeypatch.setitem(config().backfill, "page_limit", 50)
+    return exchange, clock
+
+
+def test_backfill_pages_and_skips_the_forming_bar(market):
+    exchange, clock = market
+    clock["now"] = exchange.t0 + 250 * PERIOD + 600  # bar 250 is forming
+
+    reports = history.backfill(["TKN"], ["1h"], days=8, now=clock["now"])  # 192 bars wanted
+
+    report = reports[0]
+    assert report["errors"] == []
+    assert report["bars_added"] == 192
+    assert report["total"] == 192
+    assert report["pages"] >= 4  # 50 bars per page
+    assert report["gaps"] == 0
+    frame = history.load_bars("TKN/QUOTE", "1h")
+    assert int(frame["ts"].iat[-1]) == exchange.t0 + 249 * PERIOD  # newest closed bar
+    assert len(frame) == 192
+
+
+def test_incremental_update_repairs_partial_bars(market):
+    exchange, clock = market
+    clock["now"] = exchange.t0 + 100 * PERIOD + 10
+    history.update("TKN", "1h", days=2, now=clock["now"])
+    # A partial bar stored by an older version: wrong close for the newest bar.
+    newest = exchange.t0 + 99 * PERIOD
+    history._store("TKN/QUOTE", "1h", [history.Bar(newest, 1, 1, 1, 1, 1)])
+
+    clock["now"] = exchange.t0 + 101 * PERIOD + 10
+    report, forming = history.update("TKN", "1h", now=clock["now"])
+
+    frame = history.load_bars("TKN/QUOTE", "1h")
+    repaired = frame[frame["ts"] == newest]
+    assert float(repaired["close"].to_numpy()[0]) == pytest.approx(exchange.ticks[99][-1])
+    assert report.bars_added == 1
+    assert forming is not None
+    assert forming.ts == exchange.t0 + 101 * PERIOD
+
+
+def test_window_reads_closed_bars_from_the_store(market):
+    exchange, clock = market
+    clock["now"] = exchange.t0 + 120 * PERIOD + 1800
+    frame, forming = history.window("TKN", "1h", 30, now=clock["now"])
+    assert len(frame) == 30
+    assert int(frame["ts"].iat[-1]) == exchange.t0 + 119 * PERIOD
+    assert forming is not None
+    assert forming.ts == exchange.t0 + 120 * PERIOD
+    assert forming.low == pytest.approx(min(exchange.ticks[120][:4]))  # ticks seen so far
+
+
+def test_report_counts_gaps_duplicates_and_bad_bars(market):
+    _, _ = market
+    t = 1_700_000_000 - 1_700_000_000 % PERIOD
+    bars = [history.Bar(t + i * PERIOD, 10, 11, 9, 10, 1) for i in range(10) if i not in (3, 4, 7)]
+    bars.append(history.Bar(t + 10 * PERIOD, 10, 9, 11, 10, 1))  # high below low
+    bars.append(history.Bar(t + 11 * PERIOD + 5, 10, 11, 9, 10, 1))  # misaligned
+    history._store("BAD/QUOTE", "1h", bars)
+    report = history.SeriesReport("BAD/QUOTE", "1h", "fake")
+
+    history._validate("BAD/QUOTE", "1h", report, None, None)
+
+    assert report.gaps == 2
+    assert report.largest_gap_bars == 2
+    assert report.ohlc_errors == 1
+    assert report.misaligned == 1
+    assert report.gap_fraction == pytest.approx(3 / 12)
+
+
+def test_duplicate_bars_in_pages_are_counted(market, monkeypatch):
+    exchange, clock = market
+    clock["now"] = exchange.t0 + 40 * PERIOD + 1
+    original = exchange.fetch_ohlcv
+
+    def doubled(*args, **kwargs):
+        page = original(*args, **kwargs)
+        return page + page[:1]
+
+    monkeypatch.setattr(exchange, "fetch_ohlcv", doubled)
+    report, _ = history.update("TKN", "1h", days=1, now=clock["now"])
+    assert report.duplicates >= 1
+
+
+def test_unsupported_timeframe_is_refused(market):
+    with pytest.raises(ValueError, match="not offered"):
+        history.update("TKN", "3h")

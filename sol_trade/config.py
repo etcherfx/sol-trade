@@ -56,6 +56,22 @@ SECTION_DEFAULTS: dict[str, dict[str, Any]] = {
         # Subreddits the sentiment layer reads; empty means nothing is read.
         "subreddits": [],
     },
+    "costs": {
+        # Per-side cost assumed for tokens without measured quotes.
+        "default_cost_bps": 50.0,
+        # Measured costs are multiplied by this before use.
+        "safety_multiplier": 1.25,
+        # Trade sizes (USD) probed with Jupiter quotes.
+        "probe_sizes_usd": [25, 100, 250],
+        # Probes older than this don't count as fresh evidence.
+        "max_sample_age_days": 14,
+    },
+    "backfill": {
+        "default_timeframes": ["1h"],
+        "default_days": 730,
+        # Bars requested per exchange call.
+        "page_limit": 100,
+    },
 }
 
 
@@ -109,6 +125,9 @@ class Config:
         self.strategy: str = "default"
         self.data_exchange: str = "okx"
         self.candles_path: str = "data/candles.db"
+        # Runtime folder of JSON strategies, and the research/positions database.
+        self.strategies_path: str = "strategies"
+        self.research_db_path: str = "data/research.db"
         for section, defaults in SECTION_DEFAULTS.items():
             setattr(self, section, copy.deepcopy(defaults))
         self.path = config_path or os.getenv("SOLTRADE_CONFIG_PATH") or os.path.join(
@@ -148,6 +167,8 @@ class Config:
     risk: dict[str, Any]
     rpc: dict[str, Any]
     sentiment: dict[str, Any]
+    costs: dict[str, Any]
+    backfill: dict[str, Any]
 
     def _apply_config_file(self) -> None:
         default_config: dict[str, Any] = {
@@ -168,6 +189,8 @@ class Config:
             "strategy": "default",
             "data_exchange": "okx",
             "candles_path": "data/candles.db",
+            "strategies_path": "strategies",
+            "research_db_path": "data/research.db",
 
             # Whale Tracker
             "whale_tracking_enabled": False,

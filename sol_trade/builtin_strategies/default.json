@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "name": "default",
+  "description": "Built-in example: EMA trend or lower-band dip with oversold RSI; exits on the mirror image. Not a tested edge.",
+  "timeframe": "1m",
+  "lookback": 50,
+  "risk": {
+    "stoploss": 5,
+    "takeprofit": 10,
+    "trailing_stoploss": 2,
+    "trailing_stoploss_target": 5
+  },
+  "indicators": {
+    "ema_s": {"fn": "ema", "period": 5},
+    "ema_m": {"fn": "ema", "period": 21},
+    "bb": {"fn": "bbands", "period": 14, "mult": 2},
+    "rsi": {"fn": "rsi", "period": 14}
+  },
+  "entry": {
+    "all": [
+      {"any": [["ema_s", ">", "ema_m"], ["close", "<", "bb.lower"]]},
+      ["rsi", "<=", 30]
+    ]
+  },
+  "exit": {
+    "all": [
+      {"any": [["ema_s", "<", "ema_m"], ["close", ">", "bb.upper"]]},
+      ["rsi", ">=", 70]
+    ]
+  }
+}

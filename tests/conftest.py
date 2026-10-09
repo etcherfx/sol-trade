@@ -10,6 +10,7 @@ import os
 import shutil
 import tempfile
 
+import pytest
 from solders.keypair import Keypair
 
 from sol_trade import config as config_module
@@ -54,3 +55,9 @@ def pytest_sessionstart(session):
 def pytest_sessionfinish(session, exitstatus):
     os.chdir(_REPO_CWD)
     shutil.rmtree(_SANDBOX, ignore_errors=True)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_cwd(tmp_path, monkeypatch):
+    """Each test runs in its own folder, so relative data/ and strategies/ paths never leak."""
+    monkeypatch.chdir(tmp_path)

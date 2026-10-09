@@ -6,6 +6,7 @@ from solders.message import to_bytes_versioned
 from solders.transaction import VersionedTransaction
 
 from sol_trade.config import config
+from sol_trade.jupiter import decimals
 from sol_trade.log import log_general, log_transaction
 from sol_trade.wallet import find_balance
 
@@ -97,7 +98,7 @@ async def create_order(
         f"SolTrade is creating order for {input_amount} {input_token_mint}."
     )
 
-    token_decimals = config().decimals(input_token_mint)
+    token_decimals = 10 ** decimals(input_token_mint)
     
     # Convert token amount to smallest unit (lamports for SOL, etc.)
     amount_in_smallest_unit = int(input_amount * token_decimals)
@@ -261,7 +262,7 @@ async def perform_swap(
         return None
 
     # Calculate the actual amounts from the execution result
-    decimals = config().decimals(output_token_mint)
+    output_decimals = 10 ** decimals(output_token_mint)
     
     output_amount_str = "0"
     if execute_result and execute_result.get("totalOutputAmount"):
@@ -269,7 +270,7 @@ async def perform_swap(
     elif order and order.get("outAmount"):
         output_amount_str = order.get("outAmount")
     
-    bought_amount = int(output_amount_str) / decimals
+    bought_amount = int(output_amount_str) / output_decimals
     
     log_transaction.info(
         f"SolTrade sold {sent_amount} {sent_token_symbol} for {bought_amount:.2f} {output_token_symbol}."

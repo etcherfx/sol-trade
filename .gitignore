@@ -21,3 +21,6 @@ logs/
 
 # Project files
 *.psd
+# Runtime strategies (JSON) live here; only the folder is tracked
+strategies/*
+!strategies/.gitkeep

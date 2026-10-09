@@ -1,532 +1,41 @@
-"""Tests for the dry-run (paper trading) path."""
+"""The trading loop: balances, the token guard, dust, live swaps, migration."""
+
+import json
+from datetime import UTC, datetime
 
 import pandas as pd
 import pytest
 
-from sol_trade import trading
+from sol_trade import costs, data_source, ledger, trading
 from sol_trade.config import config
+from sol_trade.costs import CostModel
+from sol_trade.engine import Position, SimExecutor, SymbolState
+from sol_trade.ui import UIState
+from tests.fakes import FakeExchange, make_ticks
+from tests.test_parity import FIXTURE
+
+FREE = CostModel("SOL", "measured", ((0.0, 0.0),), 0.0)
 
 
-def _reset_dry_run() -> None:
-    trading._dry_run = False
-    trading._balance_cache.set_paper_mode(False)
-    trading._balance_cache._paper = {}
-    trading._balance_cache._cache = {}
-    trading._current_total_capital = 0.0
+@pytest.fixture(autouse=True)
+def _reset(monkeypatch):
+    monkeypatch.setattr(trading, "_dry_run", False)
+    monkeypatch.setattr(trading, "_last_price_map", {})
+    monkeypatch.setattr(trading, "_balance_cache", trading.BalanceCache())
+    monkeypatch.setattr(trading, "_strategy_errors", {})
 
 
-def test_candles_to_frame_includes_volume():
-    candles = [
-        {
-            "close": 1.0,
-            "high": 1.1,
-            "low": 0.9,
-            "open": 1.0,
-            "volume": 100.0,
-            "totalvolume": 200.0,
-            "time": 1,
-        }
-    ]
-    df = trading._candles_to_frame(candles)
-    assert list(df.columns) == [
-        "close", "high", "low", "open", "volume", "totalvolume", "time",
-    ]
-    assert float(df["volume"].iat[0]) == pytest.approx(100.0)
-    assert float(df["totalvolume"].iat[0]) == pytest.approx(200.0)
-
-
-def test_pick_indicator_resolves_strategy_column_names():
-    import pandas as pd
-
-    # Custom strategies may use their own column names — no ema_s/ema_m columns.
-    custom = pd.Series({"ema_fast": 1.5, "ema_slow": 2.0, "ema_mid": 1.8})
-    assert trading._pick_indicator(custom, "ema_s", "ema_fast") == 1.5
-    assert trading._pick_indicator(custom, "ema_m", "ema_mid", "ema_slow") == 1.8
-
-    # Default-strategy names win when present.
-    default = pd.Series({"ema_s": 3.0, "ema_fast": 1.5})
-    assert trading._pick_indicator(default, "ema_s", "ema_fast") == 3.0
-
-    # NaN in the preferred column falls through to the next candidate.
-    nan_first = pd.Series({"ema_s": float("nan"), "ema_fast": 1.5})
-    assert trading._pick_indicator(nan_first, "ema_s", "ema_fast") == 1.5
-
-    # Nothing present -> 0.0 (dashboard shows a dash-like zero, not a crash).
-    assert trading._pick_indicator(pd.Series({"rsi": 10.0}), "ema_s", "ema_fast") == 0.0
+def _open(symbol: str, size: float, book: str = ledger.LIVE) -> None:
+    position = Position(symbol, "s", "h", 100.0, size, 100.0 * size, 0, 95.0, 110.0)
+    ledger.save_state(book, symbol, SymbolState(position=position))
 
 
 def test_balance_cache_tolerates_rpc_errors(monkeypatch):
-    _reset_dry_run()
-
     def _boom(*args, **kwargs):
         raise RuntimeError("rpc down")
 
     monkeypatch.setattr(trading, "find_balance", _boom)
-    # A non-rate-limit RPC failure must degrade to 0.0, not abort the cycle.
     assert trading._balance_cache.get("SOME_MINT") == 0.0
-    _reset_dry_run()
-
-
-def test_capture_baseline_tolerates_rpc_errors(monkeypatch):
-    def _boom(*args, **kwargs):
-        raise RuntimeError("rpc down")
-
-    monkeypatch.setattr(trading, "find_balance", _boom)
-    monkeypatch.setattr(trading, "fetch_prices", lambda mints: {})
-    # Startup baseline must survive a transient RPC outage.
-    trading._capture_baseline()
-    assert trading.initial_primary_balance == 0.0
-    assert len(trading.initial_secondary_balances) == len(config().secondary_mints)
-    assert all(b == 0.0 for b in trading.initial_secondary_balances)
-
-
-def test_live_buy_chain_mocked_swap(tmp_path, monkeypatch):
-    _reset_dry_run()  # live path (_dry_run False), swap mocked
-    monkeypatch.setattr(config(), "confluence_enabled", False)
-    monkeypatch.setattr(config(), "sentiment_enabled", False)
-    # Single-token view so the weighted budget is 100% (config has 6 tokens).
-    monkeypatch.setattr(config(), "secondary_mint_symbols", ["SOL"])
-    monkeypatch.setattr(config(), "secondary_mints", [config().secondary_mints[0]])
-    monkeypatch.setattr(config(), "secondary_weights", [])
-
-    async def fake_swap(*args, **kwargs):
-        return {"out_amount": 1.0, "sent_amount": 100.0}
-
-    monkeypatch.setattr(trading, "perform_swap", fake_swap)
-    trading._balance_cache.set(config().primary_mint, 100.0)
-    trading._balance_cache.set(config().secondary_mints[0], 0.0)
-    df = _trading_df(entry=1)
-    csv_path = tmp_path / "sol.csv"
-
-    ok = trading.handle_buy_signal(
-        df, config().secondary_mints[0], str(csv_path), "SOL"
-    )
-
-    assert ok
-    assert bool(df["position"].iat[-1]) is True
-    assert float(df["position_size"].iat[-1]) == pytest.approx(1.0)
-    assert float(df["entry_price"].iat[-1]) == pytest.approx(100.0)  # 100 USDC / 1 SOL
-    saved = pd.read_csv(csv_path)
-    assert bool(saved["position"].iat[-1]) is True
-    assert "stoploss" in saved.columns  # risk levels persisted with the position
-    # Both balances invalidated so the next cycle re-reads the wallet.
-    assert config().primary_mint not in trading._balance_cache._cache
-    assert config().secondary_mints[0] not in trading._balance_cache._cache
-    _reset_dry_run()
-
-
-def test_live_sell_chain_mocked_swap(tmp_path, monkeypatch):
-    _reset_dry_run()  # live path, swap mocked
-    monkeypatch.setattr(config(), "confluence_enabled", False)
-    monkeypatch.setattr(config(), "sentiment_enabled", False)
-
-    async def fake_swap(*args, **kwargs):
-        return {"out_amount": 150.0, "sent_amount": 1.0}  # 1 SOL -> 150 USDC
-
-    monkeypatch.setattr(trading, "perform_swap", fake_swap)
-    trading._balance_cache.set(config().secondary_mints[0], 1.0)
-    trading._balance_cache.set(config().primary_mint, 0.0)
-    df = _trading_df(exit_=1, size=1.0)
-    csv_path = tmp_path / "sol.csv"
-
-    ok = trading.handle_sell_signal(
-        df, config().secondary_mints[0], str(csv_path), "SOL"
-    )
-
-    assert ok
-    assert bool(df["position"].iat[-1]) is False  # full close
-    saved = pd.read_csv(csv_path)
-    for col in ("position_size", "entry_price", "stoploss", "takeprofit"):
-        assert col not in saved.columns
-    assert config().secondary_mints[0] not in trading._balance_cache._cache
-    assert config().primary_mint not in trading._balance_cache._cache
-    _reset_dry_run()
-
-
-def test_paper_buy_updates_ledger():
-    _reset_dry_run()
-    trading._balance_cache.set_paper_mode(True)
-    trading._balance_cache.set("USDC_MINT", 100.0)
-    trading._balance_cache.set("SOL_MINT", 0.0)
-    df = pd.DataFrame({"close": [2.0]})
-
-    assert trading._paper_buy(50.0, df, "USDC_MINT", "SOL_MINT", "USDC", "SOL")
-
-    assert trading._balance_cache.get("USDC_MINT") == pytest.approx(50.0)
-    assert trading._balance_cache.get("SOL_MINT") == pytest.approx(25.0)
-    _reset_dry_run()
-
-
-def test_paper_sell_updates_ledger():
-    _reset_dry_run()
-    trading._balance_cache.set_paper_mode(True)
-    trading._balance_cache.set("USDC_MINT", 50.0)
-    trading._balance_cache.set("SOL_MINT", 25.0)
-    df = pd.DataFrame({"close": [4.0]})
-
-    assert trading._paper_sell(25.0, df, "USDC_MINT", "SOL_MINT", "USDC", "SOL")
-
-    assert trading._balance_cache.get("SOL_MINT") == pytest.approx(0.0)
-    assert trading._balance_cache.get("USDC_MINT") == pytest.approx(150.0)  # 50 + 25*4
-    _reset_dry_run()
-
-
-def test_paper_skips_on_zero_price():
-    _reset_dry_run()
-    trading._balance_cache.set_paper_mode(True)
-    trading._balance_cache.set("USDC_MINT", 100.0)
-    trading._balance_cache.set("SOL_MINT", 0.0)
-    df = pd.DataFrame({"close": [0.0]})
-
-    assert not trading._paper_buy(50.0, df, "USDC_MINT", "SOL_MINT", "USDC", "SOL")
-    assert trading._balance_cache.get("USDC_MINT") == pytest.approx(100.0)
-    _reset_dry_run()
-
-
-def test_partial_close_keeps_position():
-    df = pd.DataFrame(
-        {
-            "position": [True, True],
-            "position_size": [2.0, 2.0],
-            "entry_price": [1.0, 1.0],
-            "close": [1.1, 1.1],
-        }
-    )
-    out = trading._close_position_bookkeeping(df, 0.5)
-    assert bool(out["position"].iat[-1]) is True
-    assert out["position_size"].iat[-1] == pytest.approx(1.5)
-    assert "entry_price" in out.columns  # weighted-average entry kept
-
-
-def test_full_close_clears_position():
-    df = pd.DataFrame(
-        {
-            "position": [True, True],
-            "position_size": [2.0, 2.0],
-            "entry_price": [1.0, 1.0],
-            "stoploss": [0.9, 0.9],
-            "takeprofit": [1.2, 1.2],
-            "trailing_stoploss": [0.95, 0.95],
-            "trailing_stoploss_target": [1.05, 1.05],
-        }
-    )
-    out = trading._close_position_bookkeeping(df, 2.0)
-    assert bool(out["position"].iat[-1]) is False
-    for col in ("position_size", "entry_price", "stoploss", "takeprofit"):
-        assert col not in out.columns
-
-
-def test_close_without_size_treats_as_full_close():
-    df = pd.DataFrame({"position": [True, True]})
-    out = trading._close_position_bookkeeping(df, 1.0)
-    assert bool(out["position"].iat[-1]) is False
-
-
-def _trading_df(entry: int = 0, exit_: int = 0, size: float | None = 2.0) -> pd.DataFrame:
-    """A 60-bar frame with strategy indicators and optional carried position."""
-    close = pd.Series(range(100, 160), dtype=float)
-    df = pd.DataFrame(
-        {
-            "open": close,
-            "close": close,
-            "high": close + 1,
-            "low": close - 1,
-            "symbol": "SOL",
-            "entry": 0,
-            "exit": 0,
-        }
-    )
-    df = trading.strategy(df)  # attaches strategy_instance + indicators
-    df.loc[df.index[-1], "entry"] = entry
-    df.loc[df.index[-1], "exit"] = exit_
-    if size is not None:
-        df["position"] = True
-        df["position_size"] = size
-        df["entry_price"] = 105.0
-        df["stoploss"] = 95.0
-        df["takeprofit"] = 130.0
-        df["trailing_stoploss"] = 100.0
-        df["trailing_stoploss_target"] = 110.0
-    return df
-
-
-def test_weighted_buy_capped_at_weight_slice(tmp_path, monkeypatch):
-    _reset_dry_run()
-    trading._dry_run = True
-    trading._balance_cache.set_paper_mode(True)
-    trading._balance_cache.set(config().primary_mint, 100.0)
-    trading._balance_cache.set(config().secondary_mints[0], 0.0)
-    monkeypatch.setattr(config(), "confluence_enabled", False)
-    monkeypatch.setattr(config(), "secondary_mint_symbols", ["SOL", "JUP"])
-    monkeypatch.setattr(config(), "secondary_weights", [0.6, 0.4])
-    df = _trading_df(entry=1)
-
-    ok = trading.handle_buy_signal(df, config().secondary_mints[0], str(tmp_path / "sol.csv"), "SOL")
-
-    assert ok
-    # Budget = 0.6 x 100 capital = 60 USDC -> 60 / 159 SOL, not the full balance.
-    assert float(df["position_size"].iat[-1]) == pytest.approx(60.0 / 159.0)
-    assert float(df["entry_price"].iat[-1]) == pytest.approx(159.0)
-    _reset_dry_run()
-
-
-def test_zero_weight_token_never_buys(tmp_path, monkeypatch):
-    _reset_dry_run()
-    trading._dry_run = True
-    trading._balance_cache.set_paper_mode(True)
-    trading._balance_cache.set(config().primary_mint, 100.0)
-    trading._balance_cache.set(config().secondary_mints[0], 0.0)
-    monkeypatch.setattr(config(), "confluence_enabled", False)
-    monkeypatch.setattr(config(), "secondary_mint_symbols", ["SOL", "JUP"])
-    monkeypatch.setattr(config(), "secondary_weights", [0.0, 1.0])
-    df = _trading_df(entry=1)
-
-    ok = trading.handle_buy_signal(df, config().secondary_mints[0], str(tmp_path / "sol.csv"), "SOL")
-
-    assert not ok
-    # No trade: the carried position bookkeeping is untouched.
-    assert float(df["position_size"].iat[-1]) == pytest.approx(2.0)
-    assert float(df["entry_price"].iat[-1]) == pytest.approx(105.0)
-    _reset_dry_run()
-
-
-def test_token_change_guard_blocks_removal_of_open_position(tmp_path, monkeypatch):
-    from sol_trade.config import config as get_config
-
-    cfg = get_config()
-    prev = {
-        "secondary_mints": ["M1"],
-        "secondary_mint_symbols": ["SOL"],
-        "secondary_weights": [],
-    }
-    # The removed token has an open position persisted in its CSV.
-    open_csv = tmp_path / "SOL_data.csv"
-    open_csv.write_text("close,position\n1.0,True\n")
-    monkeypatch.setattr(
-        trading, "read_dataframe_from_csv", lambda p: pd.read_csv(str(open_csv))
-    )
-    monkeypatch.setattr(cfg, "secondary_mints", ["M2"])
-    monkeypatch.setattr(cfg, "secondary_mint_symbols", ["JUP"])
-
-    trading._enforce_token_change_guard(prev)
-
-    assert cfg.secondary_mints == ["M1"]  # rolled back
-    assert cfg.secondary_mint_symbols == ["SOL"]
-
-
-def test_token_change_guard_allows_removal_without_position(monkeypatch):
-    from sol_trade.config import config as get_config
-
-    cfg = get_config()
-    prev = {
-        "secondary_mints": ["M1"],
-        "secondary_mint_symbols": ["SOL"],
-        "secondary_weights": [],
-    }
-    def _no_csv(_path: str) -> pd.DataFrame:
-        raise FileNotFoundError()
-
-    monkeypatch.setattr(trading, "read_dataframe_from_csv", _no_csv)
-    monkeypatch.setattr(cfg, "secondary_mints", ["M2"])
-    monkeypatch.setattr(cfg, "secondary_mint_symbols", ["JUP"])
-
-    trading._enforce_token_change_guard(prev)
-
-    assert cfg.secondary_mints == ["M2"]  # change stands
-    assert cfg.secondary_mint_symbols == ["JUP"]
-
-
-def test_buy_records_fill_price_and_position_size(tmp_path, monkeypatch):
-    _reset_dry_run()
-    trading._dry_run = True
-    trading._balance_cache.set_paper_mode(True)
-    trading._balance_cache.set(config().primary_mint, 100.0)
-    trading._balance_cache.set(config().secondary_mints[0], 0.0)
-    monkeypatch.setattr(config(), "confluence_enabled", False)
-    monkeypatch.setattr(config(), "secondary_mint_symbols", ["SOL"])
-    monkeypatch.setattr(config(), "secondary_weights", [])
-    df = _trading_df(entry=1)
-
-    ok = trading.handle_buy_signal(df, config().secondary_mints[0], str(tmp_path / "sol.csv"), "SOL")
-
-    assert ok
-    assert bool(df["position"].iat[-1]) is True
-    assert float(df["position_size"].iat[-1]) == pytest.approx(100.0 / 159.0)
-    # entry_price = input / bought (the real fill price), not the signal close
-    assert float(df["entry_price"].iat[-1]) == pytest.approx(159.0)
-    sl = float(df.strategy_instance.stoploss)
-    assert float(df["stoploss"].iat[-1]) == pytest.approx(159.0 * (1 - sl / 100))
-    _reset_dry_run()
-
-
-def test_partial_sell_keeps_position(tmp_path, monkeypatch):
-    _reset_dry_run()
-    trading._dry_run = True
-    trading._balance_cache.set_paper_mode(True)
-    trading._balance_cache.set(config().primary_mint, 0.0)
-    trading._balance_cache.set(config().secondary_mints[0], 0.75)  # sell 0.75 of a 2.0 position
-    monkeypatch.setattr(config(), "confluence_enabled", False)
-    monkeypatch.setattr(config(), "sentiment_enabled", False)
-    df = _trading_df(exit_=1, size=2.0)
-    csv_path = tmp_path / "sol.csv"
-
-    ok = trading.handle_sell_signal(df, config().secondary_mints[0], str(csv_path), "SOL")
-
-    assert ok
-    assert bool(df["position"].iat[-1]) is True  # position stays open
-    # The persisted frame carries the reduced size and the kept entry price.
-    saved = pd.read_csv(csv_path)
-    assert float(saved["position_size"].iat[-1]) == pytest.approx(1.25)
-    assert float(saved["entry_price"].iat[-1]) == pytest.approx(105.0)
-    _reset_dry_run()
-
-
-def test_trailing_stop_fires_immediately_on_fresh_breach(tmp_path, monkeypatch):
-    _reset_dry_run()
-    trading._dry_run = True
-    trading._balance_cache.set_paper_mode(True)
-    trading._balance_cache.set(config().primary_mint, 0.0)
-    trading._balance_cache.set(config().secondary_mints[0], 2.0)
-    monkeypatch.setattr(config(), "confluence_enabled", False)
-    monkeypatch.setattr(config(), "sentiment_enabled", False)
-    # Position entered at 1.00 with a 1.20 carried peak, so the ratcheted stop
-    # is 1.20 * 0.98 = 1.176. The last close (1.17) sits below the fresh stop
-    # but above the 1.00 stop carried from the previous cycle — the strategy
-    # layer never set exit, so handle_sell_signal must.
-    close = pd.Series([1.02, 1.05, 1.10, 1.17])
-    df = pd.DataFrame(
-        {
-            "open": close,
-            "close": close,
-            "high": close + 0.02,
-            "low": close - 0.02,
-            "symbol": "SOL",
-            "entry": 0,
-            "exit": 0,
-            "position": True,
-            "position_size": 2.0,
-            "entry_price": 1.00,
-            "stoploss": 0.90,
-            "takeprofit": 1.30,
-            "trailing_stoploss": 1.00,  # carried constant from last cycle
-            "trailing_stoploss_target": 1.05,
-            "highest_price": 1.20,  # carried peak -> ratchet lifts the stop
-        }
-    )
-    df = trading.strategy(df)  # attaches strategy_instance with risk parameters
-    csv_path = tmp_path / "sol.csv"
-
-    ok = trading.handle_sell_signal(
-        df, config().secondary_mints[0], str(csv_path), "SOL"
-    )
-
-    assert ok
-    saved = pd.read_csv(csv_path)
-    assert bool(saved["position"].iat[-1]) is False  # full close
-    # The paper ledger received the proceeds of the full 2.0 position.
-    assert trading._balance_cache.get(config().primary_mint) == pytest.approx(
-        2.0 * 1.17
-    )
-    _reset_dry_run()
-
-
-def test_sell_capped_at_tracked_position(tmp_path, monkeypatch):
-    _reset_dry_run()
-    trading._dry_run = True
-    trading._balance_cache.set_paper_mode(True)
-    trading._balance_cache.set(config().primary_mint, 0.0)
-    trading._balance_cache.set(config().secondary_mints[0], 5.0)  # pre-existing extra
-    monkeypatch.setattr(config(), "confluence_enabled", False)
-    monkeypatch.setattr(config(), "sentiment_enabled", False)
-    df = _trading_df(exit_=1, size=2.0)  # tracked position is 2.0
-    csv_path = tmp_path / "sol.csv"
-
-    ok = trading.handle_sell_signal(
-        df, config().secondary_mints[0], str(csv_path), "SOL"
-    )
-
-    assert ok
-    # Only the tracked 2.0 was sold; the pre-existing 3.0 stays in the ledger.
-    assert trading._balance_cache.get(config().secondary_mints[0]) == pytest.approx(3.0)
-    saved = pd.read_csv(csv_path)
-    assert bool(saved["position"].iat[-1]) is False  # position fully closed
-    _reset_dry_run()
-
-
-def test_full_close_clears_position_and_columns(tmp_path, monkeypatch):
-    _reset_dry_run()
-    trading._dry_run = True
-    trading._balance_cache.set_paper_mode(True)
-    trading._balance_cache.set(config().primary_mint, 0.0)
-    trading._balance_cache.set(config().secondary_mints[0], 2.0)  # sell the entire position
-    monkeypatch.setattr(config(), "confluence_enabled", False)
-    monkeypatch.setattr(config(), "sentiment_enabled", False)
-    df = _trading_df(exit_=1, size=2.0)
-    csv_path = tmp_path / "sol.csv"
-
-    ok = trading.handle_sell_signal(df, config().secondary_mints[0], str(csv_path), "SOL")
-
-    assert ok
-    assert bool(df["position"].iat[-1]) is False
-    # The persisted frame has no position/risk columns left.
-    saved = pd.read_csv(csv_path)
-    for col in ("position_size", "entry_price", "stoploss", "takeprofit"):
-        assert col not in saved.columns
-    _reset_dry_run()
-
-
-def test_dust_position_is_written_off(tmp_path, monkeypatch):
-    path = tmp_path / "SOL_data.csv"
-    pd.DataFrame(
-        {"close": [100.0], "position": [True], "position_size": [1.4e-8], "entry_price": [150.0]}
-    ).to_csv(path, index=False)
-    df = pd.read_csv(path)
-
-    out = trading._write_off_dust(df, "SOL", 150.0, str(path))
-
-    assert bool(out["position"].iat[-1]) is False
-    assert bool(pd.read_csv(path)["position"].iat[-1]) is False
-
-
-def test_real_position_is_not_dust(tmp_path):
-    path = tmp_path / "SOL_data.csv"
-    df = pd.DataFrame({"close": [100.0], "position": [True], "position_size": [0.5]})
-
-    out = trading._write_off_dust(df, "SOL", 150.0, str(path))
-
-    assert bool(out["position"].iat[-1]) is True
-    assert not path.exists()  # nothing written
-
-
-def test_dust_does_not_block_token_removal(tmp_path, monkeypatch):
-    cfg = config()
-    prev = {
-        "secondary_mints": ["M1"],
-        "secondary_mint_symbols": ["SOL"],
-        "secondary_weights": [],
-    }
-    dust_csv = tmp_path / "SOL_data.csv"
-    dust_csv.write_text("close,position,position_size\n1.0,True,1.4e-8\n")
-    monkeypatch.setattr(trading, "read_dataframe_from_csv", lambda p: pd.read_csv(str(dust_csv)))
-    monkeypatch.setitem(trading._last_price_map, "M1", 150.0)
-    monkeypatch.setattr(cfg, "secondary_mints", ["M2"])
-    monkeypatch.setattr(cfg, "secondary_mint_symbols", ["JUP"])
-
-    trading._enforce_token_change_guard(prev)
-
-    assert cfg.secondary_mints == ["M2"]  # removal stands: the position is dust
-
-
-def test_dry_run_ledger_is_virtual(monkeypatch):
-    def _no_rpc(*args, **kwargs):
-        raise AssertionError("dry run must not read the wallet")
-
-    monkeypatch.setattr(trading, "find_balance", _no_rpc)
-    cache = trading.BalanceCache()
-    cache.set_paper_mode(True)
-
-    assert cache.get(config().primary_mint) == pytest.approx(config().risk["max_live_capital"])
-    assert cache.get(config().secondary_mints[0]) == 0.0
 
 
 def test_live_balance_reads_expire(monkeypatch):
@@ -534,11 +43,180 @@ def test_live_balance_reads_expire(monkeypatch):
     monkeypatch.setattr(trading, "find_balance", lambda mint: reads.append(mint) or 1.0)
     clock = {"now": 0.0}
     cache = trading.BalanceCache(clock=lambda: clock["now"])
-    ttl = config().rpc["balance_refresh_seconds"]
 
     cache.get("M")
     cache.get("M")
-    clock["now"] = ttl + 1
+    clock["now"] = config().rpc["balance_refresh_seconds"] + 1
     cache.get("M")
 
     assert reads == ["M", "M"]  # one read, reused, then refreshed after the TTL
+
+
+def _prev():
+    return {"secondary_mints": ["M1"], "secondary_mint_symbols": ["SOL"], "secondary_weights": []}
+
+
+def test_token_change_guard_blocks_removal_of_open_position(monkeypatch):
+    cfg = config()
+    _open("SOL", 1.0)
+    monkeypatch.setattr(cfg, "secondary_mints", ["M2"])
+    monkeypatch.setattr(cfg, "secondary_mint_symbols", ["JUP"])
+
+    trading._enforce_token_change_guard(_prev())
+
+    assert cfg.secondary_mints == ["M1"]  # rolled back
+    assert cfg.secondary_mint_symbols == ["SOL"]
+
+
+def test_token_change_guard_allows_removal_without_position(monkeypatch):
+    cfg = config()
+    monkeypatch.setattr(cfg, "secondary_mints", ["M2"])
+    monkeypatch.setattr(cfg, "secondary_mint_symbols", ["JUP"])
+
+    trading._enforce_token_change_guard(_prev())
+
+    assert cfg.secondary_mints == ["M2"]
+
+
+def test_dust_does_not_block_token_removal(monkeypatch):
+    cfg = config()
+    _open("SOL", 1.4e-8)
+    trading._last_price_map["M1"] = 150.0
+    monkeypatch.setattr(cfg, "secondary_mints", ["M2"])
+    monkeypatch.setattr(cfg, "secondary_mint_symbols", ["JUP"])
+
+    trading._enforce_token_change_guard(_prev())
+
+    assert cfg.secondary_mints == ["M2"]  # the position is dust
+
+
+def test_dust_is_written_off_without_a_swap(monkeypatch):
+    _open("SOL", 1.4e-8)
+    _open("JUP", 2.0)
+    cfg = config()
+    sol, jup = cfg.secondary_mints
+
+    trading._sweep_live_dust({sol: 150.0, jup: 0.5})
+
+    assert ledger.open_position(ledger.LIVE, "SOL") is None
+    assert ledger.open_position(ledger.LIVE, "JUP") is not None  # worth $1.00, not dust
+    trade = ledger.trades(ledger.LIVE, "SOL")[0]
+    assert trade["reason"] == "dust"
+    assert ledger.fills(ledger.LIVE) == []  # nothing was swapped
+
+
+def test_live_executor_records_actual_and_modeled_costs(monkeypatch):
+    cfg = config()
+    sol = cfg.secondary_mints[0]
+    trading._last_price_map[sol] = 100.0
+    monkeypatch.setattr(costs, "model_for", lambda _s: CostModel("SOL", "measured", ((0.0, 20.0),), 0.0))
+    swaps = []
+
+    async def fake_swap(amount, input_mint, output_mint, *_symbols):
+        swaps.append((amount, input_mint, output_mint))
+        if input_mint == cfg.primary_mint:
+            return {"out_amount": 0.995, "sent_amount": amount}  # $100 -> 0.995 SOL at $100
+        return {"out_amount": 99.0, "sent_amount": amount}
+
+    monkeypatch.setattr(trading, "perform_swap", fake_swap)
+    executor = trading.LiveExecutor()
+
+    buy = executor.buy("SOL", 100.0, 99.0, 60, "signal")
+    trading._balance_cache.set(sol, 0.5)  # the wallet holds less than the position
+    sell = executor.sell("SOL", 0.995, 99.0, 120, "signal")
+
+    assert buy is not None and sell is not None
+    assert buy.size == pytest.approx(0.995)
+    assert buy.cost == pytest.approx(0.5)  # $100 spent for $99.50 of SOL
+    assert buy.modeled_cost == pytest.approx(0.2)
+    assert swaps[1][0] == 0.5  # capped at the wallet balance
+    assert sell.cost == pytest.approx(0.5 * 100 - 99.0)
+
+
+def test_legacy_csv_positions_are_imported_once(tmp_path):
+    data = tmp_path / "data"
+    data.mkdir()
+    pd.DataFrame(
+        {
+            "close": [150.0],
+            "time": ["2026-08-10 12:00:00"],
+            "position": [True],
+            "position_size": [1.4e-8],
+            "entry_price": [151.0],
+            "stoploss": [145.0],
+            "takeprofit": [160.0],
+            "highest_price": [152.0],
+        }
+    ).to_csv(data / "SOL_data.csv", index=False)
+    pd.DataFrame({"close": [1.0], "position": [False]}).to_csv(data / "JUP_data.csv", index=False)
+
+    assert ledger.migrate_legacy_csv() == ["SOL"]
+
+    position = ledger.open_position(ledger.LIVE, "SOL")
+    assert position is not None
+    assert position.size == pytest.approx(1.4e-8)
+    assert position.stop == 145.0 and position.take_profit == 160.0
+    assert position.entry_ts == int(datetime(2026, 8, 10, 12, tzinfo=UTC).timestamp())
+    assert ledger.open_position(ledger.LIVE, "JUP") is None
+    assert (data / "SOL_data.csv.migrated").exists()
+    assert (data / "JUP_data.csv.migrated").exists()
+    assert not (data / "SOL_data.csv").exists()
+    assert ledger.migrate_legacy_csv() == []  # nothing left to import
+
+
+def test_weight_cap(monkeypatch):
+    monkeypatch.setattr(config(), "secondary_mint_symbols", ["SOL", "JUP"])
+    monkeypatch.setattr(config(), "secondary_weights", [0.6, 0.4])
+    monkeypatch.setattr(trading, "_current_total_capital", 200.0)
+    assert trading._weight_cap("SOL") == pytest.approx(120.0)
+    monkeypatch.setattr(config(), "secondary_weights", [])
+    assert trading._weight_cap("SOL") is None
+
+
+def test_pick_resolves_indicator_names():
+    values = {"ema_fast": 1.5, "ema_mid": 1.8, "ema_s": float("nan")}
+    assert trading._pick(values, "ema_s", "ema_fast") == 1.5
+    assert trading._pick(values, "ema_m", "ema_mid") == 1.8
+    assert trading._pick({}, "rsi") == 0.0
+
+
+@pytest.fixture
+def dry_run_market(monkeypatch, tmp_path):
+    ticks = make_ticks(120, seed=11)
+    exchange = FakeExchange(ticks, 60, lambda: 0.0)
+    clock = {"now": exchange.t0 + 100 * 60 + 5}
+    exchange.clock = lambda: clock["now"]
+    monkeypatch.setattr(data_source, "get_exchange", lambda *_args, **_kwargs: exchange)
+    monkeypatch.setattr(trading.time, "time", lambda: clock["now"])
+    monkeypatch.setattr(costs, "model_for", lambda _s: FREE)
+    monkeypatch.setattr(trading, "fetch_prices", lambda mints: dict.fromkeys(mints, 1.0))
+    monkeypatch.setattr(trading, "_dry_run", True)
+    folder = tmp_path / "strategies"
+    folder.mkdir()
+    (folder / "parity.json").write_text(json.dumps(FIXTURE))
+    monkeypatch.setattr(config(), "token_strategies", {"SOL": "parity", "JUP": "missing_one"})
+    return clock
+
+
+def test_dry_run_cycle_uses_the_virtual_book(dry_run_market, monkeypatch):
+    def _no_rpc(*args, **kwargs):
+        raise AssertionError("a dry run must not read the wallet")
+
+    monkeypatch.setattr(trading, "find_balance", _no_rpc)
+    state = UIState()
+
+    trading.perform_analysis(state)
+
+    snapshot = state.snapshot()
+    assert [t.symbol for t in snapshot.tokens] == ["SOL"]  # JUP's strategy is missing: skipped
+    assert "missing_one" in trading._strategy_errors["JUP"]
+    assert snapshot.primary_balance == pytest.approx(config().risk["max_live_capital"])
+    assert ledger.load_state(ledger.DRY_RUN, "SOL").last_bar_ts is not None
+
+
+def test_main_book_starts_from_virtual_capital(monkeypatch):
+    monkeypatch.setattr(trading, "_dry_run", True)
+    book = trading._main_book()
+    assert book.name == ledger.DRY_RUN
+    assert book.cash == pytest.approx(config().risk["max_live_capital"])
+    assert isinstance(book.executor, SimExecutor)
