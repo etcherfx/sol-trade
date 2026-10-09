@@ -81,3 +81,16 @@ def test_measure_stores_probes_and_builds_the_model(monkeypatch):
     assert model.bps(25) == pytest.approx(22.0 * safety)
     assert model.bps(100) == pytest.approx(32.0 * safety)
     assert costs.sample_age_days("TKN") == pytest.approx(0.0, abs=0.01)
+
+
+def test_a_skewed_reference_price_cancels_between_legs():
+    """Quotes valued at an off-mid USD price: the buy looks 20 bps cheap, the sell 40 bps dear."""
+    from sol_trade.utils import write_json_atomic
+
+    samples = [
+        {"side": "buy", "size_usd": 100.0, "cost_bps": -20.0, "network_fee_usd": 0.0},
+        {"side": "sell", "size_usd": 100.0, "cost_bps": 40.0, "network_fee_usd": 0.0},
+    ]
+    write_json_atomic(costs.COSTS_PATH, {"TKN": {"samples": samples, "measured_ts": 0}})
+    safety = config().costs["safety_multiplier"]
+    assert costs.model_for("TKN").bps(100) == pytest.approx(10.0 * safety)  # the round trip is 20 bps

@@ -146,7 +146,12 @@ def default_model(symbol: str) -> CostModel:
 
 
 def model_for(symbol: str) -> CostModel:
-    """The cost model for ``symbol`` from stored probes, else the default."""
+    """The cost model for ``symbol`` from stored probes, else the default.
+
+    Each size's cost is the mean of its buy and sell legs, so an offset in the
+    USD reference price (which makes one leg look cheaper and the other dearer
+    by the same amount) cancels out; a negative mean counts as zero.
+    """
     data = load_json_data(COSTS_PATH, {})
     record = (data.get(symbol) if isinstance(data, dict) else None) or {}
     samples = [s for s in record.get("samples", []) if s.get("cost_bps") is not None]
@@ -155,9 +160,9 @@ def model_for(symbol: str) -> CostModel:
     safety = float(config().costs["safety_multiplier"])
     by_size: dict[float, list[float]] = {}
     for s in samples:
-        by_size.setdefault(float(s["size_usd"]), []).append(max(float(s["cost_bps"]), 0.0))
+        by_size.setdefault(float(s["size_usd"]), []).append(float(s["cost_bps"]))
     points = tuple(
-        (size, sum(values) / len(values) * safety) for size, values in sorted(by_size.items())
+        (size, max(sum(values) / len(values), 0.0) * safety) for size, values in sorted(by_size.items())
     )
     fees = sorted(float(s.get("network_fee_usd") or 0.0) for s in samples)
     return CostModel(symbol, "measured", points, fees[len(fees) // 2], record.get("measured_at"))
