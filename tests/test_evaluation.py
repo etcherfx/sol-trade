@@ -220,3 +220,56 @@ def test_position_size_scales_entries_and_drawdown(sol_6h):
     result = evaluation.evaluate(half, "SOL", sol_6h, SOL_COST, record=False)
     assert result["data"]["position_notional"] == 50
     assert result["benchmarks"]["buy_and_hold"]["notional"] == 50
+
+
+def _ts(text: str) -> int:
+    return int(pd.Timestamp(text, tz="UTC").timestamp())
+
+
+def test_a_slow_strategys_empty_holdout_is_insufficient_not_a_failure(sol_6h):
+    """trend_ema_6h trades ~9 times a year: 60 held-out days with 0 trades can't judge it.
+
+    The old rule demanded 8 trades and rejected the hash for good.
+    """
+    result = evaluation.holdout(spec.compile_spec(TREND_EMA_6H), "SOL", sol_6h, SOL_COST)
+
+    assert result["verdict"] == evaluation.INSUFFICIENT
+    assert not result["passed"]
+    assert result["data"] == {"first": "2026-08-10T12:00:00Z", "last": "2026-10-09T06:00:00Z", "bars": 240}
+    assert result["required_trades"] == 2  # 35 selection trades in ~3.8 years, scaled to 60 days
+    assert result["gates"][0] == {"gate": "holdout_trades", "value": 0, "threshold": 2, "passed": False}
+
+
+def test_the_held_out_period_grows_from_its_pinned_start(sol_6h):
+    strategy = spec.compile_spec(TREND_EMA_6H)
+    earlier = sol_6h[sol_6h["ts"] < _ts("2025-12-01")].reset_index(drop=True)
+    first = evaluation.holdout(strategy, "SOL", earlier, SOL_COST)
+    assert first["verdict"] == evaluation.INSUFFICIENT  # one closed trade
+
+    later = evaluation.holdout(strategy, "SOL", sol_6h, SOL_COST, start_ts=first["start_ts"])
+
+    assert later["data"]["first"] == first["data"]["first"] == "2025-10-02T00:00:00Z"
+    assert later["required_trades"] == first["required_trades"]  # the bar doesn't move with time
+    assert later["gates"][0]["value"] == 7
+    assert later["verdict"] == evaluation.PASS
+
+
+def test_a_drawdown_breach_fails_even_with_few_trades(strategy, monkeypatch):
+    frame = _market()
+    start = int(frame["ts"].iat[len(frame) - 60 * 24])
+    monkeypatch.setitem(config().risk, "max_drawdown_pct", 0.01)
+    result = evaluation.holdout(strategy, "TKN", frame, FREE, start_ts=start, end_ts=start + 40 * HOUR)
+    assert result["gates"][0]["passed"] is False  # too few trades to judge the return...
+    assert result["verdict"] == evaluation.FAIL  # ...but the drawdown limit is a hard line
+    assert result["reasons"][-1].startswith("holdout_max_drawdown_pct")
+
+
+def test_a_loss_on_too_few_trades_is_insufficient(monkeypatch):
+    losing = spec.compile_spec({**SPEC, "entry": SPEC["exit"], "exit": SPEC["entry"]})
+    frame = _market()
+    start = int(frame["ts"].iat[len(frame) - 60 * 24])
+    monkeypatch.setitem(config().risk, "max_drawdown_pct", 100)
+    result = evaluation.holdout(losing, "TKN", frame, FREE, start_ts=start, end_ts=start + 40 * HOUR)
+    assert result["metrics"]["total_return_pct"] < 0
+    assert result["gates"][0]["value"] < result["required_trades"]
+    assert result["verdict"] == evaluation.INSUFFICIENT

@@ -397,7 +397,7 @@ The pipeline decides which strategies trade, with evidence for every step. Resea
 3. **Backtest** with `backtest <strategy> <symbol>`. The newest `gates.holdout_days` are held out. The rest runs as one backtest after costs, sliced into `gates.folds` folds, against buy-and-hold and cash. The verdict is `PASS`, `FAIL` or `INSUFFICIENT_EVIDENCE`, with reasons.
 
    Every simulation (backtest, held-out period, paper book) holds the capital the live bot risks, `risk.max_live_capital`, and each entry spends `risk.max_trade_size` times the strategy's `position_size`. Returns and drawdowns are percentages of that capital, the same base the kill switch uses. Buy-and-hold holds the same position size on the same capital.
-4. **Promote** a `PASS` with `promote <strategy> <symbol>`: the held-out period runs once per hash. A failure rejects the hash for good; a pass starts a paper book.
+4. **Promote** a `PASS` with `promote <strategy> <symbol>`: the held-out period runs from flat. A pass starts a paper book; a failure (a drawdown breach, or a loss over enough closed trades) rejects the hash for good. Too few closed trades to judge is `holdout_insufficient`: the hash stays eligible, its held-out period keeps the start of the first attempt and grows as bars arrive, so `promote` again later.
 5. **Paper** books trade the strategy on live candles with modeled costs. The bot moves a paper candidate to live by itself once its evidence qualifies, and retires it after `promotion.max_paper_days` if it never does.
 6. **Live** strategies are added to `config.json` (atomically, with a backup in `data/config_backups/`) and trade from the spec that was tested.
 
@@ -408,7 +408,7 @@ The pipeline decides which strategies trade, with evidence for every step. Resea
 | Sharpe | Above 0 and above buy-and-hold | |
 | Folds | At least 3 of 4 folds profitable | `gates.folds`, `gates.min_positive_folds` |
 | Deflated Sharpe | ≥ 0.95: the Sharpe ratio still beats the best of the variants tried on that symbol and timeframe | `gates.min_deflated_sharpe` |
-| Held out | At least 8 trades, a profit, drawdown ≤ 15% | `gates.holdout_min_trades` |
+| Held out | Drawdown ≤ 15%, then enough closed trades to judge (8, or fewer for a slow strategy: its selection-period trade rate over `gates.holdout_days`, at least 1), then a profit | `gates.holdout_min_trades` |
 | Paper → live | 14 days, 90% of bars observed, 2 round trips, return within max(1 point, 25%) of a backtest replay, drawdown ≤ 15%, a free live slot, the token not traded by another strategy | `promotion.*` |
 
 Every strategy variant counts: the deflated Sharpe ratio corrects for the number of distinct hashes tested on a symbol and timeframe, so trying many variants raises the bar.
@@ -428,12 +428,13 @@ Every strategy variant counts: the deflated Sharpe ratio corrects for the number
 | `backfill [--symbols A,B] [--timeframes 1h,15m] [--days N]` | Per series: bars added, range, gaps, duplicates, bad bars |
 | `backtest <strategy> <symbol>` | `verdict`, `reasons`, metrics, folds, benchmarks, gates, deflated Sharpe, trial number and count, flags, `rpc` |
 | `candidates [--symbol S]` | The pipeline, trials, and whether trading is paused |
-| `promote <strategy> <symbol>` | The transition, or a refusal code (`not_passed`, `costs_unmeasured`, `paper_full`, `not_ready`, `holdout_failed`, ...) |
+| `promote <strategy> <symbol>` | The transition, or a refusal code (`not_passed`, `costs_unmeasured`, `paper_full`, `not_ready`, `holdout_insufficient`, `holdout_failed`, ...) |
 | `demote <strategy> <symbol> [--reason R]` | The transition; `demote_pending` while the bot still has to sell |
 | `measure-costs [--symbols A,B]` | The cost model per token, from fresh Jupiter quotes |
 | `status [--healthcheck]` | Bot mode and heartbeat, positions and P&L after costs, paper books, paused, RPC usage today, recorder health, warnings; `--healthcheck` exits 1 without a fresh heartbeat |
 | `report` | `{"text": ...}`: a Discord-ready summary of at most 1,900 characters |
 | `approve <strategy> <symbol>` | Lets paper → live proceed when `require_approval` is on (interactive terminal only) |
+| `reopen <strategy> <symbol>` | Re-opens a hash rejected by the old fixed held-out trade minimum, once, after replaying its stored held-out period under the current rule (interactive terminal only) |
 | `resume` | Clears the kill switch (interactive terminal only) |
 
 ## FAQ

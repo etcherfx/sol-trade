@@ -22,6 +22,7 @@ import pandas as pd
 from sol_trade import backtest, costs, history, ledger, rpc
 from sol_trade.config import config
 from sol_trade.costs import CostModel
+from sol_trade.engine import FORCED
 from sol_trade.spec import Strategy
 
 PASS = "PASS"
@@ -298,38 +299,94 @@ def evaluate(
     return result
 
 
+def required_holdout_trades(sim: backtest.Simulation, holdout_days: float) -> int:
+    """Closed trades a held-out period needs before it can be judged.
+
+    ``gates.holdout_min_trades``, scaled down to what the strategy's trade
+    rate in ``sim`` (the selection period) predicts for ``holdout_days``, and
+    never below one: a strategy that trades ten times a year can't be expected
+    to close eight trades in 60 days.
+    """
+    floor = int(config().gates["holdout_min_trades"])
+    if sim.ts.size < 2:
+        return floor
+    days = (int(sim.ts[-1]) - int(sim.ts[0])) / 86400
+    closed = sum(t.reason != FORCED for t in sim.trades)
+    if days <= 0:
+        return floor
+    return min(floor, max(1, math.ceil(closed / days * holdout_days)))
+
+
 def holdout(
-    strategy: Strategy, symbol: str, frame: pd.DataFrame | None = None, model: CostModel | None = None
+    strategy: Strategy,
+    symbol: str,
+    frame: pd.DataFrame | None = None,
+    model: CostModel | None = None,
+    start_ts: int | None = None,
+    end_ts: int | None = None,
 ) -> dict[str, Any]:
-    """Run the held-out period from flat and judge it; used once per hash, on promotion."""
+    """Run the held-out period from flat and judge it on promotion.
+
+    The verdict is FAIL when the period breaches the drawdown limit, or closes
+    enough trades and loses money; INSUFFICIENT_EVIDENCE when it closes too
+    few trades to judge (see :func:`required_holdout_trades`); PASS otherwise.
+    Only a FAIL rejects a hash. ``start_ts`` pins the start of an earlier
+    attempt, so the period grows as bars arrive; ``end_ts`` (exclusive)
+    replays a past window. A position still open at the end is marked at the
+    last close for the return and drawdown, but only closed trades count.
+    """
     before = rpc.usage.snapshot()
     gates = config().gates
     frame = load_frame(strategy, symbol) if frame is None else frame
     model = model or costs.model_for(symbol)
     cut = split(frame, strategy)
+    ts = frame["ts"]
+    if start_ts is not None or end_ts is not None:
+        stamps = ts.to_numpy()
+        first = int(np.searchsorted(stamps, start_ts, side="left")) if start_ts is not None else cut.holdout_start
+        last = int(np.searchsorted(stamps, end_ts, side="left")) if end_ts is not None else cut.end
+        cut = Split(cut.start, max(first, cut.start), max(last, cut.start))
     result: dict[str, Any] = {"strategy": strategy.name, "hash": strategy.hash, "symbol": symbol}
     if cut.holdout_bars == 0 or cut.selection_bars == 0:
-        result.update(passed=False, reasons=["no held-out bars; run backfill"], rpc=_rpc_delta(before))
+        result.update(
+            verdict=INSUFFICIENT, passed=False, reasons=["no held-out bars; run backfill"], start_ts=start_ts,
+            rpc=_rpc_delta(before),
+        )
         return result
     signals = backtest.compute_signals(strategy, frame, symbol)
     capital, trade_size = backtest.sizing()
+    selection = backtest.simulate(
+        strategy, symbol, frame, *signals, cut.start, cut.holdout_start, model, capital, trade_size
+    )
+    required = required_holdout_trades(selection, float(gates["holdout_days"]))
     sim = backtest.simulate(strategy, symbol, frame, *signals, cut.holdout_start, cut.end, model, capital, trade_size)
     metrics = backtest.metrics(sim, strategy.period_seconds)
+    closed = sum(t.reason != FORCED for t in sim.trades)
     max_dd = float(config().risk["max_drawdown_pct"])
-    checks = [
-        _gate("holdout_trades", metrics["trades"], gates["holdout_min_trades"],
-              metrics["trades"] >= gates["holdout_min_trades"]),
-        _gate("holdout_return_pct", metrics["total_return_pct"], 0, metrics["total_return_pct"] > 0),
-        _gate("holdout_max_drawdown_pct", metrics["max_drawdown_pct"], max_dd, metrics["max_drawdown_pct"] <= max_dd),
-    ]
-    ts = frame["ts"]
+    drawdown = _gate("holdout_max_drawdown_pct", metrics["max_drawdown_pct"], max_dd,
+                     metrics["max_drawdown_pct"] <= max_dd)
+    evidence = _gate("holdout_trades", closed, required, closed >= required)
+    profit = _gate("holdout_return_pct", metrics["total_return_pct"], 0, metrics["total_return_pct"] > 0)
+    if not drawdown["passed"]:
+        verdict = FAIL
+    elif not evidence["passed"]:
+        verdict = INSUFFICIENT
+    elif not profit["passed"]:
+        verdict = FAIL
+    else:
+        verdict = PASS
+    checks = [evidence, profit, drawdown]
     result.update(
-        passed=all(g["passed"] for g in checks),
+        verdict=verdict,
+        passed=verdict == PASS,
         reasons=[_describe(g) for g in checks if not g["passed"]],
         metrics={k: v for k, v in metrics.items() if k != "sharpe_per_bar"},
         benchmarks=backtest.benchmarks(frame, cut.holdout_start, cut.end, model, capital, strategy.period_seconds,
                                        backtest.position_notional(strategy)),
         gates=checks,
+        start_ts=int(ts.iat[cut.holdout_start]),
+        required_trades=required,
+        selection_trades=sum(t.reason != FORCED for t in selection.trades),
         data={
             "first": _iso(int(ts.iat[cut.holdout_start])),
             "last": _iso(int(ts.iat[cut.end - 1])),

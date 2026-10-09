@@ -2,8 +2,9 @@
 
 A candidate is one strategy hash on one symbol. ``backtest`` records it and
 moves it to ``backtest_passed`` on a PASS verdict. ``promote`` runs the
-held-out check once per hash (a failure rejects the hash for good) and
-starts a paper book. The bot advances paper candidates to ``live`` when
+held-out check (a FAIL rejects the hash for good; too few trades to judge
+leaves it eligible, and the period grows until it can be judged) and starts
+a paper book. The bot advances paper candidates to ``live`` when
 their paper evidence qualifies, retires those that don't, and demotes live
 ones that misbehave. A live strategy trades from the spec stored here, so
 editing its file can't change what was promoted.
@@ -332,19 +333,85 @@ def _to_paper(candidate: Candidate, strategy: Strategy, symbol: str) -> dict[str
     limit = int(config().promotion["max_paper_candidates"])
     if len(candidates(states=(PAPER,))) >= limit:
         raise Refused("paper_full", f"{limit} candidates are already in paper")
-    if candidate.holdout is None:
-        result = evaluation.holdout(strategy, symbol, model=model)
-        with ledger.connect() as conn:
-            conn.execute(
-                "UPDATE candidates SET holdout = ? WHERE strategy_hash = ? AND symbol = ?",
-                (json.dumps(_evidence(result), default=str), candidate.hash, symbol),
-            )
-        if not result["passed"]:
+    if _holdout_verdict(candidate.holdout) != evaluation.PASS:
+        start_ts = (candidate.holdout or {}).get("start_ts")
+        result = evaluation.holdout(strategy, symbol, model=model, start_ts=start_ts)
+        _store_holdout(candidate, {**_evidence(result), "start_ts": result.get("start_ts")})
+        if result["verdict"] == evaluation.FAIL:
             return _transition(candidate, REJECTED, "held-out period failed", _evidence(result))
+        if result["verdict"] != evaluation.PASS:
+            log_general.info(f"pipeline: {candidate.strategy} on {symbol} held-out period inconclusive: {result['reasons']}")
+            raise Refused(
+                "holdout_insufficient",
+                "the held-out period has too few closed trades to judge; the hash stays eligible and the "
+                "period grows as bars arrive, so promote again later",
+                [*result["reasons"], f"held out since {result.get('data', {}).get('first')}"],
+            )
     ledger.delete_book(candidate.book_name)
     capital = backtest.sizing()[0]
     ledger.save_meta(candidate.book_name, {"cash": capital, "capital": capital, "observed_bars": 0})
     return _transition(candidate, PAPER, "held-out period passed", {"holdout": candidate.holdout or "passed"})
+
+
+def _holdout_verdict(holdout: dict[str, Any] | None) -> str | None:
+    """The stored held-out verdict; results from before verdicts existed only say ``passed``."""
+    if not holdout:
+        return None
+    return holdout.get("verdict") or (evaluation.PASS if holdout.get("passed") else evaluation.FAIL)
+
+
+def _store_holdout(candidate: Candidate, evidence: dict[str, Any]) -> None:
+    with ledger.connect() as conn:
+        conn.execute(
+            "UPDATE candidates SET holdout = ? WHERE strategy_hash = ? AND symbol = ?",
+            (json.dumps(evidence, default=str), candidate.hash, candidate.symbol),
+        )
+    candidate.holdout = evidence
+
+
+def _iso_ts(text: str | None) -> int | None:
+    return int(datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC).timestamp()) if text else None
+
+
+def reopen(strategy: Strategy, symbol: str) -> dict[str, Any]:
+    """Re-open a hash the held-out check rejected under the old fixed trade minimum (human-only, once).
+
+    Before held-out verdicts existed, a period with fewer than
+    ``gates.holdout_min_trades`` trades rejected the hash. This replays exactly
+    that stored window under the current rule: unless it now FAILs (a loss
+    over enough trades, or a drawdown breach), the hash goes back to
+    ``backtest_passed`` with its held-out start kept, so later promotions judge
+    the same period, grown by the bars since.
+    """
+    candidate = get(strategy.hash, symbol)
+    if candidate is None or candidate.state != REJECTED:
+        raise Refused("not_rejected", f"{strategy.name} ({strategy.hash[:12]}) on {symbol} is not rejected")
+    if any(t["from"] == REJECTED for t in transitions(candidate.hash, limit=1000) if t["symbol"] == symbol):
+        raise Refused("already_reopened", f"{strategy.name} on {symbol} was re-opened before; that is a one-off")
+    old = candidate.holdout or {}
+    if "verdict" in old or not old.get("data"):
+        raise Refused("not_reopenable", "this hash was not rejected by the old fixed held-out trade minimum")
+    data = old["data"]
+    period = strategy.period_seconds
+    start_ts, last_ts = _iso_ts(data.get("first")), _iso_ts(data.get("last"))
+    result = evaluation.holdout(
+        strategy, symbol, start_ts=start_ts, end_ts=None if last_ts is None else last_ts + period
+    )
+    if result["verdict"] == evaluation.FAIL:
+        raise Refused("not_reopenable", "the stored held-out period fails under the current rule too", result["reasons"])
+    if result.get("data", {}).get("first") != data.get("first") or result.get("data", {}).get("last") != data.get("last"):
+        raise Refused("not_reopenable", "the stored held-out bars are no longer in the candle store; run backfill",
+                      [f"stored {data.get('first')} to {data.get('last')}", f"found {result.get('data')}"])
+    evidence = {**_evidence(result), "start_ts": result["start_ts"]}
+    _store_holdout(candidate, evidence)
+    log_general.warning(
+        f"pipeline: {strategy.name} ({strategy.hash[:12]}) on {symbol} re-opened by a human: rejected under the "
+        f"old fixed held-out trade minimum; now {result['verdict']}"
+    )
+    return _transition(
+        candidate, BACKTEST_PASSED, "reopened: rejected under the old fixed held-out trade minimum",
+        {"old_holdout": old, "rejudged": evidence, "by": "human (interactive terminal)"},
+    )
 
 
 def approve(strategy: Strategy, symbol: str) -> dict[str, Any]:

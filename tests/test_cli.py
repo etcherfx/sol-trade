@@ -91,7 +91,7 @@ def test_promote_refusal_has_a_code(stored_strategy):
 
 def test_human_commands_need_a_terminal(stored_strategy, monkeypatch):
     monkeypatch.setattr("sys.stdin", io.StringIO())
-    for argv in (("approve", stored_strategy, "TKN"), ("resume",)):
+    for argv in (("approve", stored_strategy, "TKN"), ("reopen", stored_strategy, "TKN"), ("resume",)):
         code, payload = _run(*argv)
         assert code == 1 and payload["error"] == "tty_required"
 

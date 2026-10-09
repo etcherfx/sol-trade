@@ -11,6 +11,7 @@ from sol_trade.config import config
 from sol_trade.costs import CostModel
 from sol_trade.engine import Book, Position, SimExecutor, SymbolState, Trade
 from tests.fakes import FakeExchange, make_ticks
+from tests.test_evaluation import SOL_6H, TREND_EMA_6H
 from tests.test_parity import FIXTURE
 
 MEASURED = CostModel("TKN", "measured", ((0.0, 10.0),), 0.0)
@@ -51,12 +52,15 @@ def _passed(strategy, symbol="TKN"):
     promotion.record_backtest(strategy, symbol, {"verdict": evaluation.PASS, "metrics": {"trades": 40}})
 
 
-def _holdout(monkeypatch, passed=True):
+def _holdout(monkeypatch, passed=True, verdict=None):
     calls = []
+    verdict = verdict or (evaluation.PASS if passed else evaluation.FAIL)
 
-    def fake(strategy, symbol, frame=None, model=None):
+    def fake(strategy, symbol, frame=None, model=None, start_ts=None, end_ts=None):
         calls.append(strategy.hash)
-        return {"passed": passed, "reasons": [] if passed else ["holdout_return_pct -3 is not above 0"]}
+        reasons = {evaluation.PASS: [], evaluation.FAIL: ["holdout_return_pct -3 is not above 0"],
+                   evaluation.INSUFFICIENT: ["holdout_trades 0 is below 2"]}[verdict]
+        return {"verdict": verdict, "passed": verdict == evaluation.PASS, "reasons": reasons, "start_ts": 1000}
 
     monkeypatch.setattr(evaluation, "holdout", fake)
     return calls
@@ -119,6 +123,96 @@ def test_failed_holdout_rejects_the_hash_for_good(cfg, strategy, monkeypatch):
         promotion.promote(strategy, "TKN")
     assert refused.value.code == promotion.REJECTED
     assert calls == [strategy.hash]
+
+
+def test_an_inconclusive_holdout_keeps_the_hash_eligible(cfg, strategy, monkeypatch):
+    _passed(strategy)
+    fake_calls = _holdout(monkeypatch, verdict=evaluation.INSUFFICIENT)
+    fake = evaluation.holdout
+    pinned = []
+    monkeypatch.setattr(evaluation, "holdout", lambda *a, **k: pinned.append(k.get("start_ts")) or fake(*a, **k))
+
+    for _ in range(2):
+        with pytest.raises(promotion.Refused) as refused:
+            promotion.promote(strategy, "TKN")
+        assert refused.value.code == "holdout_insufficient"
+        assert _candidate(strategy).state == promotion.BACKTEST_PASSED
+
+    assert pinned == [None, 1000]  # the second attempt judges the same period, grown
+    assert len(fake_calls) == 2
+    assert _candidate(strategy).holdout["start_ts"] == 1000
+    _holdout(monkeypatch)  # enough trades now, and a profit
+    assert promotion.promote(strategy, "TKN")["to"] == promotion.PAPER
+
+
+def _legacy_rejection(strategy, symbol, first, last, bars):
+    """A hash rejected before held-out verdicts existed, stored as that version stored it."""
+    promotion.record_backtest(strategy, symbol, {"verdict": evaluation.PASS})
+    candidate = promotion.get(strategy.hash, symbol)
+    old = {
+        "reasons": ["holdout_trades 0 is below 8", "holdout_return_pct 0.0 is not above 0"],
+        "gates": [{"gate": "holdout_trades", "value": 0, "threshold": 8, "passed": False}],
+        "data": {"first": first, "last": last, "bars": bars},
+        "passed": False,
+    }
+    promotion._store_holdout(candidate, old)
+    promotion._transition(candidate, promotion.REJECTED, "held-out period failed", old)
+
+
+@pytest.fixture
+def sol_store(monkeypatch):
+    import pandas as pd
+
+    frame = pd.read_csv(SOL_6H)
+    monkeypatch.setattr(evaluation, "load_frame", lambda _strategy, _symbol: frame)
+    return frame
+
+
+def test_reopen_a_hash_rejected_under_the_old_trade_minimum(cfg, sol_store):
+    """trend_ema_6h on SOL: rejected for 0 of 8 held-out trades; under the scaled rule that is inconclusive."""
+    strategy = spec.compile_spec(TREND_EMA_6H)
+    _legacy_rejection(strategy, "SOL", "2026-08-10T12:00:00Z", "2026-10-09T06:00:00Z", 240)
+
+    result = promotion.reopen(strategy, "SOL")
+
+    assert result["from"] == promotion.REJECTED and result["to"] == promotion.BACKTEST_PASSED
+    candidate = promotion.get(strategy.hash, "SOL")
+    assert candidate.holdout["verdict"] == evaluation.INSUFFICIENT
+    assert candidate.holdout["data"]["first"] == "2026-08-10T12:00:00Z"  # the same period, pinned
+    logged = promotion.transitions(strategy.hash)[0]
+    assert logged["reason"].startswith("reopened")
+    assert logged["evidence"]["old_holdout"]["passed"] is False
+    with pytest.raises(promotion.Refused) as refused:
+        promotion.promote(strategy, "SOL")
+    assert refused.value.code == "holdout_insufficient"  # still too few trades, but no longer rejected
+
+    promotion._transition(promotion.get(strategy.hash, "SOL"), promotion.REJECTED, "held-out period failed", {})
+    with pytest.raises(promotion.Refused) as refused:
+        promotion.reopen(strategy, "SOL")
+    assert refused.value.code == "already_reopened"  # a one-off
+
+
+def test_reopen_refuses_a_window_that_fails_under_the_current_rule(cfg, sol_store):
+    strategy = spec.compile_spec(TREND_EMA_6H)
+    _legacy_rejection(strategy, "SOL", "2026-04-02T00:00:00Z", "2026-05-31T18:00:00Z", 240)  # two losing trades
+    with pytest.raises(promotion.Refused) as refused:
+        promotion.reopen(strategy, "SOL")
+    assert refused.value.code == "not_reopenable"
+    assert "fails under the current rule" in refused.value.message
+    assert any(r.startswith("holdout_return_pct") for r in refused.value.details)
+    assert promotion.get(strategy.hash, "SOL").state == promotion.REJECTED
+
+
+def test_reopen_refuses_hashes_judged_under_the_current_rule(cfg, strategy, monkeypatch):
+    with pytest.raises(promotion.Refused) as refused:
+        promotion.reopen(strategy, "TKN")
+    assert refused.value.code == "not_rejected"
+    _passed(strategy)
+    _holdout(monkeypatch, passed=False)
+    promotion.promote(strategy, "TKN")
+    with pytest.raises(promotion.Refused) as refused:
+        promotion.reopen(strategy, "TKN")
+    assert refused.value.code == "not_reopenable"
 
 
 def test_promote_starts_a_paper_book(cfg, strategy, monkeypatch):

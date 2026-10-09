@@ -90,6 +90,8 @@ SECTION_DEFAULTS: dict[str, dict[str, Any]] = {
         "min_trades": 30,
         # Probability that the Sharpe ratio beats the best of N random trials.
         "min_deflated_sharpe": 0.95,
+        # Closed held-out trades needed to judge the held-out period; slower strategies need
+        # what their selection-period trade rate predicts for holdout_days (at least 1).
         "holdout_min_trades": 8,
         # Share of missing bars above which the data is flagged DATA_GAPS.
         "max_gap_fraction": 0.02,

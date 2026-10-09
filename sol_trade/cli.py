@@ -4,8 +4,8 @@ Every command prints exactly one JSON object on stdout:
 ``{"ok": true, "command": ..., ...}`` or
 ``{"ok": false, "command": ..., "error": "<code>", "message": ..., "details": [...]}``.
 Exit codes: 0 ok, 1 refused or failed, 2 usage error. Logs go to the log
-files only. ``approve`` and ``resume`` are for humans and refuse to run
-without an interactive terminal. Nothing here signs or sends a transaction.
+files only. ``approve``, ``reopen`` and ``resume`` are for humans and refuse
+to run without an interactive terminal. Nothing here signs or sends a transaction.
 """
 
 import argparse
@@ -338,6 +338,15 @@ def cmd_approve(args: argparse.Namespace) -> dict[str, Any]:
         raise _refused(e) from e
 
 
+def cmd_reopen(args: argparse.Namespace) -> dict[str, Any]:
+    _require_tty("reopen")
+    strategy = _strategy(args.strategy)
+    try:
+        return {"transition": promotion.reopen(strategy, args.symbol)}
+    except promotion.Refused as e:
+        raise _refused(e) from e
+
+
 def cmd_resume(args: argparse.Namespace) -> dict[str, Any]:
     del args
     _require_tty("resume")
@@ -392,6 +401,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("strategy")
     p.add_argument("symbol")
     p.set_defaults(run=cmd_approve)
+
+    p = sub.add_parser(
+        "reopen", help="re-open a hash rejected under the old fixed held-out trade minimum (human, interactive terminal)"
+    )
+    p.add_argument("strategy")
+    p.add_argument("symbol")
+    p.set_defaults(run=cmd_reopen)
 
     p = sub.add_parser("resume", help="clear the kill switch (human, interactive terminal)")
     p.set_defaults(run=cmd_resume)

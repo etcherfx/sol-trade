@@ -52,7 +52,7 @@ uv run pytest          # offline, about 20 seconds
 - **Token changes:** removing a token with an open position is rolled back by `_enforce_token_change_guard`. A token-set change recaptures the P&L baseline. Keep both when touching the loop.
 - **One engine:** live, dry run, paper books and backtests all advance `engine.Book` with the same three steps. Change decision logic only in `engine.py`; `tests/test_parity.py` and the paper-replay test in `tests/test_promotion.py` must stay exact.
 - **Research makes no RPC calls:** backfill, costs, backtest and evaluation use exchange and Jupiter HTTP only, and results report `rpc: {calls, cu}`. Any Solana RPC goes through `config().client` (the `rpc` limiter).
-- **CLI contract:** every command prints exactly one JSON object and exits 0, 1 or 2 (README, Agent CLI). Refusals raise `promotion.Refused`/`CliError` with a stable code; `approve` and `resume` require a TTY.
+- **CLI contract:** every command prints exactly one JSON object and exits 0, 1 or 2 (README, Agent CLI). Refusals raise `promotion.Refused`/`CliError` with a stable code; `approve`, `reopen` and `resume` require a TTY.
 - **No market literals:** tracked code names no token, mint or pair beyond the native SOL mint and SPL program ids; markets come from `config.json` (the sample may name them).
 - **Strategies:** `strategies/{name}.json`, `name` equal to the file name. A promoted strategy trades from the spec stored with its candidate, and confluence, whale and sentiment filters skip it.
 - **Errors:** a missing or invalid key raises `ValueError` from `Config.keypair`; `main.py` reports it. Library code raises or logs; only entry points call `sys.exit`.
