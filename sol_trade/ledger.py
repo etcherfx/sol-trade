@@ -89,6 +89,35 @@ CREATE TABLE IF NOT EXISTS trials (
     updated_at REAL NOT NULL,
     UNIQUE (strategy_hash, symbol, timeframe)
 );
+CREATE TABLE IF NOT EXISTS candidates (
+    strategy_hash TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    strategy TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    state TEXT NOT NULL,
+    spec TEXT NOT NULL,
+    approved INTEGER NOT NULL DEFAULT 0,
+    holdout TEXT,
+    created_at REAL NOT NULL,
+    entered_at REAL NOT NULL,
+    PRIMARY KEY (strategy_hash, symbol)
+);
+CREATE TABLE IF NOT EXISTS transitions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    strategy_hash TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    strategy TEXT NOT NULL,
+    from_state TEXT,
+    to_state TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    evidence TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at REAL NOT NULL
+);
 CREATE INDEX IF NOT EXISTS fills_book ON fills (book, symbol, ts);
 CREATE INDEX IF NOT EXISTS trades_book ON trades (book, symbol, exit_ts);
 """
@@ -112,6 +141,14 @@ def connect() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+def decode(text: str, where: str) -> Any:
+    """Parse a stored JSON column; a corrupt row raises naming the row, never passes silently."""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"corrupt {where} in {config().research_db_path}: {e}") from e
+
+
 # ---------------------------------------------------------------- positions
 
 
@@ -122,7 +159,7 @@ def load_state(book: str, symbol: str) -> SymbolState:
         ).fetchone()
     if row is None:
         return SymbolState()
-    data = json.loads(row[0])
+    data = decode(row[0], f"position {book}/{symbol}")
     return SymbolState(
         Position.from_dict(data["position"]) if data.get("position") else None,
         Action.from_dict(data["pending"]) if data.get("pending") else None,
@@ -156,7 +193,7 @@ def open_positions(book: str | None = None) -> list[tuple[str, Position]]:
         ).fetchall()
     result = []
     for name, state in rows:
-        data = json.loads(state)
+        data = decode(state, f"position {name}")
         if data.get("position"):
             result.append((name, Position.from_dict(data["position"])))
     return result
@@ -189,7 +226,7 @@ def save_book(book: Book, symbols: list[str] | None = None) -> None:
 def load_meta(book: str) -> dict[str, Any]:
     with connect() as conn:
         row = conn.execute("SELECT state FROM books WHERE book = ?", (book,)).fetchone()
-    return json.loads(row[0]) if row else {}
+    return decode(row[0], f"book {book}") if row else {}
 
 
 def save_meta(book: str, meta: dict[str, Any]) -> None:

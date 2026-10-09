@@ -54,6 +54,22 @@
     "max_gap_fraction": 0.02
   },
 
+  "promotion": {
+    "require_approval": false,
+    "max_paper_candidates": 10,
+    "min_paper_days": 14,
+    "min_paper_coverage": 0.9,
+    "min_paper_trades": 2,
+    "replay_tolerance_points": 1.0,
+    "replay_tolerance_relative": 0.25,
+    "max_paper_days": 60,
+    "demote_drawdown_pct": 10,
+    "demote_window_days": 60,
+    "demote_min_trades": 10,
+    "max_cost_divergence_bps": 50,
+    "divergence_fills": 5
+  },
+
   "whale_tracking_enabled": false,
   "whale_wallets": {},
   "whale_poll_interval_minutes": 5,

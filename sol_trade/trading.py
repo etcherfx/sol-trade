@@ -6,6 +6,10 @@ apply the forming bar's open (queued fills) and running low (stops). The
 book is ``live`` (Jupiter swaps from the wallet) or, with ``--dry-run``,
 ``dry_run`` (a virtual ledger with modeled costs). Positions persist in
 ``data/research.db``.
+
+After the main book, every pipeline candidate in paper advances its own
+virtual book on the same candles, and the promotion governor runs: the
+kill switch, demotions, and paper candidates that qualify for live.
 """
 
 import asyncio
@@ -16,7 +20,7 @@ from typing import Any
 
 import numpy as np
 
-from sol_trade import backtest, costs, history, ledger
+from sol_trade import backtest, costs, history, ledger, promotion
 from sol_trade.config import config
 from sol_trade.engine import BUY, DUST, SELL, Book, Fill, SimExecutor
 from sol_trade.jupiter import fetch_prices
@@ -204,6 +208,8 @@ def _confluence_gate(symbol: str, side: str) -> float:
     from sol_trade.confluence import evaluate_buy_confluence, evaluate_sell_confluence
 
     cfg = config()
+    if symbol in promotion.managed_symbols():
+        return 1.0  # pipeline strategies trade exactly as they were tested
     if side == BUY and cfg.sentiment_enabled:
         if is_token_blocked(symbol):
             log_transaction.info(f"buy for {symbol} skipped: sentiment circuit breaker active")
@@ -246,9 +252,11 @@ def _main_book() -> Book:
 
 
 def _load(symbol: str) -> Strategy | None:
-    name = resolve_strategy_name(symbol)
+    """The token's strategy: a promoted spec for pipeline tokens, else the configured file."""
+    managed = promotion.managed_symbols().get(symbol)
+    name = managed.strategy if managed else resolve_strategy_name(symbol)
     try:
-        strategy = load_strategy(name)
+        strategy = managed.compile() if managed else load_strategy(name)
     except SpecError as e:
         message = f"{symbol}: strategy {name!r} unusable, token skipped: {e}"
         if _strategy_errors.get(symbol) != message:
@@ -302,6 +310,7 @@ def run_symbol(
         symbol,
     )
     return {
+        "bars": len(new),
         "close": float(frame["close"].iat[-1]) if len(frame) else 0.0,
         "entry": bool(entry[-1]) if len(entry) else False,
         "exit": bool(exit_[-1]) if len(exit_) else False,
@@ -420,6 +429,22 @@ def _update_optional_layers() -> None:
             log_general.warning(f"sentiment update failed: {e}")
 
 
+def _run_paper_books(now: float | None = None) -> None:
+    """Advance every paper candidate's virtual book; failures stay with that candidate."""
+    for candidate in promotion.candidates(states=(promotion.PAPER,)):
+        capital = float(config().risk["max_trade_size"])
+        book = ledger.persist(Book(candidate.book_name, capital, SimExecutor(costs.model_for), capital, capital))
+        ledger.load_book(book, [candidate.symbol])
+        try:
+            view = run_symbol(book, candidate.symbol, candidate.compile(), now=now)
+        except Exception as e:  # noqa: BLE001 - one candidate must not stop the others
+            log_general.warning(f"paper book {candidate.book_name} failed: {e}")
+            continue
+        finally:
+            ledger.save_state(book.name, candidate.symbol, book.state(candidate.symbol))
+        promotion.record_paper_cycle(candidate, book, view["bars"])
+
+
 def perform_analysis(state: UIState) -> None:
     global _current_total_capital
     cfg = config()
@@ -445,6 +470,7 @@ def perform_analysis(state: UIState) -> None:
     }
     _current_total_capital = book.equity(price_by_symbol)
 
+    paused = promotion.paused()
     tokens: list[TokenStatus] = []
     for mint, symbol in zip(cfg.secondary_mints, symbols, strict=False):
         position = book.position(symbol)
@@ -455,7 +481,7 @@ def perform_analysis(state: UIState) -> None:
         if strategy is None:
             continue
         try:
-            view = run_symbol(book, symbol, strategy)
+            view = run_symbol(book, symbol, strategy, allow_entry=paused is None)
         except Exception as e:  # noqa: BLE001 - one token must not abort the cycle
             log_general.warning(f"analysis failed for {symbol}: {e}")
             continue
@@ -478,10 +504,22 @@ def perform_analysis(state: UIState) -> None:
                 entry_price=position.entry_price if position else None,
             )
         )
+    try:
+        promotion.govern(book, price_by_symbol)
+    except Exception as e:  # noqa: BLE001 - the governor retries next cycle
+        log_general.error(f"promotion governor failed: {e}")
+    finally:
+        for symbol in symbols:
+            ledger.save_state(book.name, symbol, book.state(symbol))
     if _dry_run:
         meta = ledger.load_meta(book.name)
         meta["cash"] = book.cash
         ledger.save_meta(book.name, meta)
+    _run_paper_books()
+    try:
+        promotion.advance_paper()
+    except Exception as e:  # noqa: BLE001 - retried next cycle
+        log_general.error(f"paper promotion check failed: {e}")
 
     current_value = _book_value(book, price_by_symbol)
     total_profit = current_value - _baseline_value

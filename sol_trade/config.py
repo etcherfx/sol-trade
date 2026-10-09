@@ -86,6 +86,26 @@ SECTION_DEFAULTS: dict[str, dict[str, Any]] = {
         # Share of missing bars above which the data is flagged DATA_GAPS.
         "max_gap_fraction": 0.02,
     },
+    "promotion": {
+        # Paper -> live waits for a human `approve` when true.
+        "require_approval": False,
+        "max_paper_candidates": 10,
+        # Paper evidence needed before going live.
+        "min_paper_days": 14,
+        "min_paper_coverage": 0.9,
+        "min_paper_trades": 2,
+        # Paper return must stay within max(points, relative share) of a backtest replay.
+        "replay_tolerance_points": 1.0,
+        "replay_tolerance_relative": 0.25,
+        # Paper candidates that don't qualify within this many days are retired.
+        "max_paper_days": 60,
+        # Live demotion: the strategy's own drawdown, a losing recent window, or costs off model.
+        "demote_drawdown_pct": 10.0,
+        "demote_window_days": 60,
+        "demote_min_trades": 10,
+        "max_cost_divergence_bps": 50.0,
+        "divergence_fills": 5,
+    },
 }
 
 
@@ -184,6 +204,7 @@ class Config:
     costs: dict[str, Any]
     backfill: dict[str, Any]
     gates: dict[str, Any]
+    promotion: dict[str, Any]
 
     def _apply_config_file(self) -> None:
         default_config: dict[str, Any] = {
