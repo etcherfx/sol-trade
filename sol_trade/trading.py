@@ -226,6 +226,23 @@ def _confluence_gate(symbol: str, side: str) -> float:
     return factor
 
 
+def _persist_and_log(book: Book) -> Book:
+    """Store every fill and trade, and log each fill (the dry run and paper books have no other trace)."""
+    ledger.persist(book)
+    store = book.on_fill
+
+    def on_fill(b: Book, fill: Fill) -> None:
+        if store is not None:
+            store(b, fill)
+        log_transaction.info(
+            f"{b.name}: {fill.side} {fill.size:g} {fill.symbol} at {fill.price:.6g} "
+            f"(${fill.notional:.2f}, cost ${fill.cost:.4f}, {fill.reason})"
+        )
+
+    book.on_fill = on_fill
+    return book
+
+
 def _main_book() -> Book:
     cfg = config()
     executor = SimExecutor(costs.model_for) if _dry_run else LiveExecutor()
@@ -239,7 +256,7 @@ def _main_book() -> Book:
         weight_cap=_weight_cap,
         gate=_confluence_gate if gated else None,
     )
-    ledger.persist(book)
+    _persist_and_log(book)
     if _dry_run:
         meta = ledger.load_meta(book.name)
         book.cash = float(meta.get("cash", cfg.risk["max_live_capital"]))
@@ -438,7 +455,7 @@ def _run_paper_books(now: float | None = None) -> None:
     """Advance every paper candidate's virtual book; failures stay with that candidate."""
     for candidate in promotion.candidates(states=(promotion.PAPER,)):
         capital = float(config().risk["max_trade_size"])
-        book = ledger.persist(Book(candidate.book_name, capital, SimExecutor(costs.model_for), capital, capital))
+        book = _persist_and_log(Book(candidate.book_name, capital, SimExecutor(costs.model_for), capital, capital))
         ledger.load_book(book, [candidate.symbol])
         try:
             view = run_symbol(book, candidate.symbol, candidate.compile(), now=now)

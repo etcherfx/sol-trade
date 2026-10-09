@@ -9,7 +9,8 @@ import pytest
 from sol_trade import costs, data_source, ledger, trading
 from sol_trade.config import config
 from sol_trade.costs import CostModel
-from sol_trade.engine import Position, SimExecutor, SymbolState
+from sol_trade.engine import Book, Position, SimExecutor, SymbolState
+from sol_trade.spec import Risk
 from sol_trade.ui import UIState
 from tests.fakes import FakeExchange, make_ticks
 from tests.test_parity import FIXTURE
@@ -220,3 +221,11 @@ def test_main_book_starts_from_virtual_capital(monkeypatch):
     assert book.name == ledger.DRY_RUN
     assert book.cash == pytest.approx(config().risk["max_live_capital"])
     assert isinstance(book.executor, SimExecutor)
+
+
+def test_fills_are_stored_and_logged(caplog):
+    book = trading._persist_and_log(Book(ledger.DRY_RUN, 100.0, SimExecutor(lambda _s: FREE), 100.0, 100.0))
+    with caplog.at_level("INFO", logger="transaction_logger"):
+        book.open_position("SOL", 60, 10.0, Risk(), "signal", "s", "h")
+    assert len(ledger.fills(ledger.DRY_RUN)) == 1
+    assert "dry_run: buy 10 SOL at 10" in caplog.text
