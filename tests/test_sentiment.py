@@ -133,10 +133,11 @@ def test_archive_ids_kinds_and_times():
 def test_import_is_idempotent_and_live_fetches_duplicate_it(monkeypatch):
     monkeypatch.setattr(sentiment, "_IMPORT_BATCH", 2)
     first = sentiment.import_archive(ARCHIVE, ["Solana"], now=50.0)
-    assert {k: v for k, v in first.items() if k != "path"} == {
+    assert {k: v for k, v in first.items() if k not in ("path", "coverage")} == {
         "read": 9, "kept": 6, "inserted": 6, "duplicates": 0,
         "skipped_unknown_subreddit": 1, "skipped_out_of_range": 0, "bad_lines": 2,
     }
+    assert first["coverage"] == [{"subreddit": "Solana", "from": "2026-10-09T09:00:00Z", "to": "2026-10-09T19:12:46Z"}]
     again = sentiment.import_archive(ARCHIVE, ["solana"], now=60.0)
     assert again["inserted"] == 0 and again["duplicates"] == 6
     live = [i for i in _feed_items().values() if i["kind"] == "post"]
@@ -231,6 +232,59 @@ def test_features_are_point_in_time_and_word_bounded():
     assert out["mentions"][1, 1] == 0 and np.isnan(out["score"][1, 1])
     expected = (sentiment.score_text("SOL is great") + sentiment.score_text("$sol looks terrible")) / 2
     assert out["score"][0, 1] == pytest.approx(expected)
+
+
+def _import(tmp_path, name, rows, subreddits=("sub",), **bounds):
+    path = tmp_path / name
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    return sentiment.import_archive(path, list(subreddits), **bounds)
+
+
+def _post(item_id, created, text, sub="sub"):
+    return {"id": item_id, "subreddit": sub, "created_utc": created, "title": text, "selftext": ""}
+
+
+def test_a_hole_between_an_import_and_live_recording_is_missing_not_quiet(tmp_path):
+    _import(tmp_path, "old.ndjson", [_post("a", 1000, "SOL up"), _post("b", 5000, "quiet")])
+    with sentiment._connect() as conn:
+        conn.execute("INSERT INTO fetches (feed, at, status) VALUES ('sub/comment', 20000, 200)")
+        conn.execute("INSERT INTO items VALUES ('t3_c', 'sub', 'post', '', 21000, 'SOL', '', 0.0, 20000)")
+    closes = np.array([2000.0, 4600.0, 5001.0, 9000.0, 21500.0, 23600.0])
+    out = sentiment.features("SOL", closes, 1.0, now=30000.0)
+    # Imported 1000..5000, live from 20000: a one-hour window fits only inside one of them.
+    assert np.isnan(out["mentions"][0])  # (-1600, 2000] starts before the import
+    assert out["mentions"][1] == 0  # inside the import, nothing mentioned
+    assert np.isnan(out["mentions"][2]) and np.isnan(out["mentions"][3])  # past its last item
+    assert np.isnan(out["mentions"][4])  # live recording started 1500 s before
+    assert out["mentions"][5] == 1
+
+
+def test_every_configured_subreddit_must_cover_the_window(tmp_path):
+    config().sentiment["subreddits"] = ["sub", "Other"]
+    _import(tmp_path, "sub.ndjson", [_post("a", 1000, "SOL"), _post("b", 9000, "x")], after=0, before=10000)
+    closes = np.array([5000.0])
+    assert np.isnan(sentiment.features("SOL", closes, 1.0, now=20000.0)["mentions"][0])
+    _import(tmp_path, "other.ndjson", [_post("c", 4000, "SOL", "other")], subreddits=["Other"], after=0, before=10000)
+    assert sentiment.features("SOL", closes, 1.0, now=20000.0)["mentions"][0] == 1
+    config().sentiment["subreddits"] = ["sub"]  # items of subreddits no longer configured don't count
+    assert sentiment.features("SOL", closes, 1.0, now=20000.0)["mentions"][0] == 0
+
+
+def test_imports_record_merged_coverage(tmp_path):
+    first = _import(tmp_path, "a.ndjson", [_post("a", 100, "x"), _post("b", 900, "y")])
+    assert first["coverage"] == [{"subreddit": "sub", "from": sentiment._iso(100), "to": sentiment._iso(900)}]
+    _import(tmp_path, "a.ndjson", [_post("a", 100, "x"), _post("b", 900, "y")])  # again: no new interval
+    _import(tmp_path, "b.ndjson", [_post("c", 86400 + 50, "z")], after=86400, before=2 * 86400)
+    _import(tmp_path, "c.ndjson", [_post("d", 3 * 86400, "z")], after=2 * 86400, before=4 * 86400)
+    assert sentiment.coverage(now=0.0)["sub"] == [
+        (100, 900, ["import a.ndjson"]),
+        (86400, 4 * 86400 - 1, ["import b.ndjson", "import c.ndjson"]),  # --before is exclusive; touching days join
+    ]
+    with sentiment._connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM coverage").fetchone()[0] == 3
+    shown = sentiment.stats(now=4 * 86400.0)["coverage"]["sub"]
+    assert shown[1] == {"from": "1970-01-02T00:00:00Z", "to": "1970-01-04T23:59:59Z",
+                        "sources": ["import b.ndjson", "import c.ndjson"]}
 
 
 def test_configured_keywords():

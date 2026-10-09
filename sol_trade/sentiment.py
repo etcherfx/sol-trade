@@ -14,8 +14,10 @@ written (same ids, same plain text, same scores).
 
 :func:`features` turns the stored items into strategy inputs: per bar close,
 the number of items mentioning the token in the trailing window and their
-mean VADER compound score. Times before recording started are NaN, so a
-strategy never mistakes "not recorded" for "no mentions".
+mean VADER compound score. Both are NaN unless the window lies inside the
+coverage of every configured subreddit (imported intervals, and live
+recording from its first fetch), so a strategy never mistakes "not
+recorded" for "no mentions".
 
 The legacy circuit breaker (``sentiment_enabled``, off by default) now reads
 the recorded items instead of fetching on its own.
@@ -23,6 +25,7 @@ the recorded items instead of fetching on its own.
 
 import html
 import json
+import math
 import re
 import sqlite3
 import time
@@ -72,6 +75,14 @@ CREATE TABLE IF NOT EXISTS fetches (
     error TEXT
 );
 CREATE INDEX IF NOT EXISTS fetches_feed ON fetches (feed, at);
+CREATE TABLE IF NOT EXISTS coverage (
+    subreddit TEXT NOT NULL,
+    start_ts INTEGER NOT NULL,
+    end_ts INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    recorded_at REAL NOT NULL,
+    PRIMARY KEY (subreddit, start_ts, end_ts)
+);
 """
 
 
@@ -256,6 +267,9 @@ def import_archive(
     ``before`` only items created in ``[after, before)``. Rows land exactly
     as the feed recorder stores them, so importing twice, or recording an
     imported item live, adds nothing.
+
+    Every subreddit with items in the file is recorded as covered from
+    ``after`` (else its first item) to ``before`` (else its last item).
     """
     now = time.time() if now is None else now
     wanted = {s.lower(): s for s in subreddits}
@@ -264,6 +278,7 @@ def import_archive(
          "bad_lines"), 0
     )
     pending: list[dict[str, Any]] = []
+    seen: dict[str, list[int]] = {}  # subreddit -> [first, last] created
 
     def flush(conn: sqlite3.Connection) -> None:
         before_changes = conn.total_changes
@@ -302,12 +317,26 @@ def import_archive(
                 counts["bad_lines"] += 1
                 continue
             counts["kept"] += 1
+            span = seen.setdefault(subreddit, [item["created"], item["created"]])
+            span[0], span[1] = min(span[0], item["created"]), max(span[1], item["created"])
             pending.append({**item, "fetched_at": now})
             if len(pending) >= _IMPORT_BATCH:
                 flush(conn)
         if pending:
             flush(conn)
-    return {"path": str(path), **counts}
+        covered = [
+            (subreddit, after if after is not None else first, before - 1 if before is not None else last)
+            for subreddit, (first, last) in sorted(seen.items())
+        ]
+        conn.executemany(
+            "INSERT OR IGNORE INTO coverage (subreddit, start_ts, end_ts, source, recorded_at) VALUES (?, ?, ?, ?, ?)",
+            [(s, start, end, f"import {Path(path).name}", now) for s, start, end in covered],
+        )
+    return {
+        "path": str(path),
+        **counts,
+        "coverage": [{"subreddit": s, "from": _iso(start), "to": _iso(end)} for s, start, end in covered],
+    }
 
 
 # ----------------------------------------------------------------- recorder
@@ -396,11 +425,68 @@ def _float(value: str | None) -> float | None:
         return None
 
 
+def _subreddits() -> list[str]:
+    return [s for s in config().sentiment.get("subreddits") or [] if s]
+
+
+def _merge(intervals: list[tuple[int, int, str]]) -> list[tuple[int, int, list[str]]]:
+    """Union of inclusive ``[start, end]`` second ranges; touching ranges join."""
+    merged: list[tuple[int, int, list[str]]] = []
+    for start, end, source in sorted(intervals):
+        if merged and start <= merged[-1][1] + 1:
+            first, last, sources = merged[-1]
+            merged[-1] = (first, max(last, end), sources if source in sources else [*sources, source])
+        else:
+            merged.append((start, end, [source]))
+    return merged
+
+
+def coverage(now: float | None = None) -> dict[str, list[tuple[int, int, list[str]]]]:
+    """Covered seconds per subreddit (lowercase keys): merged ``(start, end, sources)``, ends inclusive.
+
+    Imports cover what they recorded; the live recorder covers its
+    subreddit from the first successful fetch of either feed until ``now``.
+    """
+    end = math.floor(time.time() if now is None else now)
+    spans: dict[str, list[tuple[int, int, str]]] = {}
+    with _connect() as conn:
+        for subreddit, start, stop, source in conn.execute("SELECT subreddit, start_ts, end_ts, source FROM coverage"):
+            spans.setdefault(subreddit.lower(), []).append((int(start), int(stop), source))
+        first: dict[str, float] = {}
+        for feed, at in conn.execute("SELECT feed, MIN(at) FROM fetches WHERE status = 200 GROUP BY feed"):
+            subreddit = feed.rpartition("/")[0].lower()
+            first[subreddit] = min(at, first.get(subreddit, at))
+    for subreddit, at in first.items():
+        if math.ceil(at) <= end:
+            spans.setdefault(subreddit, []).append((math.ceil(at), end, "live"))
+    return {subreddit: _merge(intervals) for subreddit, intervals in spans.items()}
+
+
+def _covered(closes: np.ndarray, window: float, intervals: list[tuple[int, int, list[str]]]) -> np.ndarray:
+    """Whether every second of ``(t - window, t]`` lies in one of the merged ``intervals``."""
+    if not intervals:
+        return np.zeros(closes.shape, dtype=bool)
+    starts = np.array([i[0] for i in intervals], dtype=float)
+    ends = np.array([i[1] for i in intervals], dtype=float)
+    first = np.floor(closes - window) + 1
+    last = np.floor(closes)
+    index = np.searchsorted(starts, first, side="right") - 1
+    return (index >= 0) & (ends[np.maximum(index, 0)] >= last)
+
+
 def stats(now: float | None = None) -> dict[str, Any]:
-    """Recorder health for ``status``: item counts, last fetch per feed, recent gaps and errors."""
+    """Recorder health for ``status``: item counts, coverage, last fetch per feed, recent gaps and errors."""
     now = time.time() if now is None else now
     if not Path(config().sentiment["db_path"]).exists():
-        return {"feeds": [f[0] for f in feeds()], "items": 0, "since": None}
+        return {"feeds": [f[0] for f in feeds()], "items": 0, "since": None,
+                "coverage": {s: [] for s in _subreddits()}}
+    names = {s.lower(): s for s in _subreddits()}
+    covered = coverage(now)
+    shown = {
+        names.get(subreddit, subreddit): [{"from": _iso(start), "to": _iso(end), "sources": sources}
+                                          for start, end, sources in intervals]
+        for subreddit, intervals in sorted(covered.items())
+    }
     with _connect() as conn:
         items, first = conn.execute("SELECT COUNT(*), MIN(fetched_at) FROM items").fetchone()
         day = now - 86400
@@ -419,6 +505,7 @@ def stats(now: float | None = None) -> dict[str, Any]:
         "feeds": [f[0] for f in feeds()],
         "items": items,
         "since": _iso(first),
+        "coverage": {**{name: [] for name in names.values()}, **shown},
         "last_fetch": last,
         "last_24h": {"fetches": fetched, "new_items": new_day, "gaps": gaps, "errors": errors},
     }
@@ -441,47 +528,48 @@ def _mention_pattern(symbol: str) -> re.Pattern[str]:
     return re.compile(rf"(?<![\w$])\$?(?:{words})(?!\w)", re.IGNORECASE)
 
 
-def _recording_start() -> float | None:
-    with _connect() as conn:
-        row = conn.execute("SELECT MIN(at) FROM fetches WHERE status = 200").fetchone()
-    return row[0] if row else None
-
-
-def features(symbol: str | None, closes: np.ndarray, window_hours: float) -> dict[str, np.ndarray]:
+def features(
+    symbol: str | None, closes: np.ndarray, window_hours: float, now: float | None = None
+) -> dict[str, np.ndarray]:
     """Mentions and mean compound score in ``(t - window, t]`` for every bar close ``t``.
 
     The arrays match ``closes``. Score is NaN where nothing was mentioned;
-    both are NaN for times before the window is fully recorded.
+    both are NaN unless the whole window is covered (imported or recorded)
+    for every configured subreddit, so a hole never reads as "no mentions".
+    Only items of the configured subreddits count.
     """
     closes = np.asarray(closes, dtype=float)
     nan = np.full(closes.shape, np.nan)
-    if symbol is None or not Path(config().sentiment["db_path"]).exists():
+    subreddits = {s.lower() for s in _subreddits()}
+    if symbol is None or not subreddits or not Path(config().sentiment["db_path"]).exists():
         return {"score": nan, "mentions": nan.copy()}
     window = window_hours * 3600
-    start = _recording_start()
-    if start is None:
-        return {"score": nan, "mentions": nan.copy()}
-    finite = closes[np.isfinite(closes)]
-    if finite.size == 0:
+    flat = closes.ravel()
+    finite = np.isfinite(flat)
+    known = np.where(finite, flat, 0.0)
+    spans = coverage(now)
+    covered = finite.copy()
+    for subreddit in subreddits:
+        covered &= _covered(known, window, spans.get(subreddit, []))
+    if not covered.any():
         return {"score": nan, "mentions": nan.copy()}
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT created, compound, title, text FROM items WHERE created > ? AND created <= ? ORDER BY created",
-            (float(finite.min()) - window, float(finite.max())),
+            "SELECT created, compound, title, text, subreddit FROM items WHERE created > ? AND created <= ? "
+            "ORDER BY created",
+            (float(flat[covered].min()) - window, float(flat[covered].max())),
         ).fetchall()
     pattern = _mention_pattern(symbol)
-    hits = [(r[0], r[1]) for r in rows if pattern.search(f"{r[2]} {r[3]}")]
+    hits = [(r[0], r[1]) for r in rows if r[4].lower() in subreddits and pattern.search(f"{r[2]} {r[3]}")]
     created = np.array([h[0] for h in hits], dtype=float)
     cumulative = np.concatenate([[0.0], np.cumsum([h[1] for h in hits])])
-    flat = closes.ravel()
-    hi = np.searchsorted(created, flat, side="right")
-    lo = np.searchsorted(created, flat - window, side="right")
+    hi = np.searchsorted(created, known, side="right")
+    lo = np.searchsorted(created, known - window, side="right")
     mentions = (hi - lo).astype(float)
     with np.errstate(invalid="ignore", divide="ignore"):
         score = np.where(mentions > 0, (cumulative[hi] - cumulative[lo]) / np.maximum(mentions, 1), np.nan)
-    unrecorded = ~np.isfinite(flat) | (flat - window < start)
-    mentions[unrecorded] = np.nan
-    score[unrecorded] = np.nan
+    mentions[~covered] = np.nan
+    score[~covered] = np.nan
     return {"score": score.reshape(closes.shape), "mentions": mentions.reshape(closes.shape)}
 
 
@@ -499,7 +587,7 @@ def _save_sentiment_data(data: dict[str, Any]) -> None:
 def _compute_token_sentiment(token_symbol: str, now: float | None = None) -> float:
     """Mean compound score of the last day's recorded mentions; 0 without any."""
     now = time.time() if now is None else now
-    result = features(token_symbol, np.array([now]), 24.0)
+    result = features(token_symbol, np.array([now]), 24.0, now=now)
     score = float(result["score"][0])
     return score if np.isfinite(score) else 0.0
 

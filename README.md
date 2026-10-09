@@ -340,9 +340,11 @@ This feature is enabled by setting `"sentiment_enabled": true` in `config.json`.
 
 ### Sentiment recorder
 
-While the bot runs, it reads the new posts and new comments of each subreddit in `sentiment.subreddits` through Reddit's public RSS feeds, one request a minute (Reddit's limit for anonymous readers), and stores the raw text in `data/sentiment.db`. Strategies read two features from it with the `sentiment` indicator: `mentions` (items naming the token in a trailing window) and `score` (their mean [VADER](https://github.com/cjhutto/vaderSentiment) tone, -1 to +1). Values before recording started are missing, so backtests only see sentiment for the period actually recorded. `status` reports the recorder's items, gaps and errors.
+While the bot runs, it reads the new posts and new comments of each subreddit in `sentiment.subreddits` through Reddit's public RSS feeds, one request a minute (Reddit's limit for anonymous readers), and stores the raw text in `data/sentiment.db`. Strategies read two features from it with the `sentiment` indicator: `mentions` (items naming the token in a trailing window) and `score` (their mean [VADER](https://github.com/cjhutto/vaderSentiment) tone, -1 to +1). Only items of the configured subreddits count. `status` reports the recorder's items, coverage, gaps and errors.
 
 The feeds have no history. For backtests, import archived posts and comments with `import-sentiment`: newline-delimited JSON with one Reddit object per line, as Pushshift and Arctic Shift dumps and the Arctic Shift API produce them (decompress `.zst` dumps first). Objects with a `body` are comments, the rest posts. Only the subreddits in `sentiment.subreddits` (or `--subreddits`) are kept; `--after` keeps items from that UTC day on, `--before` items before that day. Imported items get the ids, text and scores the recorder would have stored, so importing a file twice, or recording an imported item live, adds nothing.
+
+Sentiment is known only where it was covered. Each import covers its subreddits from `--after` (or the file's first item) to `--before` (or its last item), and live recording covers a subreddit from its first successful fetch on. A bar's `mentions` and `score` are missing unless its whole window lies inside the coverage of **every** configured subreddit: a hole between an import and the start of recording, or a newly added subreddit without history, reads as missing, never as zero mentions. Imports that end and start on the same day join up. Import posts and comments together, since coverage can't tell them apart.
 
 </details>
 
@@ -438,13 +440,13 @@ Every strategy variant counts: the deflated Sharpe ratio corrects for the number
 | Command | Output |
 | --- | --- |
 | `backfill [--symbols A,B] [--timeframes 1h,15m] [--days N]` | Per series: bars added, range, gaps, duplicates, bad bars |
-| `import-sentiment <file> [<file> ...] [--subreddits a,b] [--after YYYY-MM-DD] [--before YYYY-MM-DD]` | Per file: lines read, kept, inserted, duplicates, skipped (other subreddits, outside the days), bad lines |
+| `import-sentiment <file> [<file> ...] [--subreddits a,b] [--after YYYY-MM-DD] [--before YYYY-MM-DD]` | Per file: lines read, kept, inserted, duplicates, skipped (other subreddits, outside the days), bad lines, and the coverage it recorded per subreddit |
 | `backtest <strategy> <symbol>` | `verdict`, `reasons`, metrics, folds, benchmarks, gates, deflated Sharpe, trial number and count, flags, `rpc` |
 | `candidates [--symbol S]` | The pipeline, trials, and whether trading is paused |
 | `promote <strategy> <symbol>` | The transition, or a refusal code (`not_passed`, `costs_unmeasured`, `paper_full`, `not_ready`, `holdout_insufficient`, `holdout_failed`, ...) |
 | `demote <strategy> <symbol> [--reason R]` | The transition; `demote_pending` while the bot still has to sell |
 | `measure-costs [--symbols A,B]` | The cost model per token, from fresh Jupiter quotes; `measure_incomplete` names any token not fully measured |
-| `status [--healthcheck]` | Bot mode and heartbeat, positions and P&L after costs, paper books, paused, RPC usage today, recorder health, warnings; `--healthcheck` exits 1 without a fresh heartbeat |
+| `status [--healthcheck]` | Bot mode and heartbeat, positions and P&L after costs, paper books, paused, RPC usage today, recorder health and sentiment coverage, warnings; `--healthcheck` exits 1 without a fresh heartbeat |
 | `report` | `{"text": ...}`: a Discord-ready summary of at most 1,900 characters |
 | `approve <strategy> <symbol>` | Lets paper → live proceed when `require_approval` is on (interactive terminal only) |
 | `reopen <strategy> <symbol>` | Re-opens a hash rejected by the old fixed held-out trade minimum, once, after replaying its stored held-out period under the current rule (interactive terminal only) |
