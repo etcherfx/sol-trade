@@ -102,3 +102,16 @@ def test_duplicate_bars_in_pages_are_counted(market, monkeypatch):
 def test_unsupported_timeframe_is_refused(market):
     with pytest.raises(ValueError, match="not offered"):
         history.update("TKN", "3h")
+
+
+def test_candle_store_allows_a_concurrent_writer(market):
+    conn = data_source._connect()
+    try:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        conn.execute("BEGIN IMMEDIATE")  # another process holding the write lock briefly
+        conn.execute("INSERT INTO candles VALUES ('X/Y', '1h', 0, 1, 1, 1, 1, 1, 1)")
+        frame = history.load_bars("X/Y", "1h")  # readers aren't blocked by a writer
+        assert frame.empty
+    finally:
+        conn.rollback()
+        conn.close()

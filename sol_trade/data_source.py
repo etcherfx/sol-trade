@@ -50,10 +50,14 @@ def get_exchange(exchange_id: str | None = None) -> Any:
 
 
 def _connect() -> sqlite3.Connection:
-    """Open the candle database, creating the schema if needed."""
+    """Open the candle database, creating the schema if needed.
+
+    WAL and a generous busy timeout let the bot and a CLI backfill write at once.
+    """
     path = Path(config().candles_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS candles (
