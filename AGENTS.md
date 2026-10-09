@@ -36,7 +36,8 @@ uv run pytest          # offline, about 20 seconds
 | `sol_trade/transactions.py` | Jupiter order, local signing and execution |
 | `sol_trade/wallet.py` | Balances, token accounts, the dynamic SOL reserve (`minimum_sol_needed`) |
 | `sol_trade/data_source.py` | Candles via ccxt, cached in the SQLite store at `candles_path` |
-| `sol_trade/sentiment.py` | Reddit RSS recorder (`data/sentiment.db`), the NDJSON archive import, point-in-time `features`, and the opt-in breaker |
+| `sol_trade/sentiment.py` | Reddit RSS recorder (`data/sentiment.db`), the NDJSON archive import, coverage intervals, point-in-time `features`, and the opt-in breaker |
+| `sol_trade/fear_greed.py` | Daily Fear & Greed index in `data/sentiment.db`: backfill, live refresh, the `fear_greed` indicator's values (day D known from D+1 00:00 UTC) |
 | `sol_trade/confluence.py`, `whale_tracker.py`, `market_regime.py` | Optional layers that size or block trades of hand-configured tokens |
 | `sol_trade/whale_discovery.py` | CLI: `uv run -m sol_trade.whale_discovery TOKEN_MINT [LIMIT]` |
 | `sol_trade/ui.py` | Terminal UI and its thread-safe `UIState` |

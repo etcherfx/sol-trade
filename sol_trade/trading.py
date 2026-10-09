@@ -20,7 +20,16 @@ from typing import Any
 
 import numpy as np
 
-from sol_trade import backtest, costs, heartbeat, history, ledger, promotion, sentiment
+from sol_trade import (
+    backtest,
+    costs,
+    fear_greed,
+    heartbeat,
+    history,
+    ledger,
+    promotion,
+    sentiment,
+)
 from sol_trade.config import config
 from sol_trade.engine import BUY, DUST, SELL, Book, Fill, SimExecutor
 from sol_trade.jupiter import fetch_prices
@@ -326,6 +335,7 @@ def run_symbol(
         frame["ts"].to_numpy(dtype=float)[-strategy.lookback :, None],
         symbol,
         sentiment.features if strategy.uses_sentiment else None,
+        fear_greed.values if strategy.uses_fear_greed else None,
     )
     return {
         "bars": len(new),
@@ -434,6 +444,10 @@ def _update_optional_layers() -> None:
         sentiment.record()
     except Exception as e:  # noqa: BLE001 - recording is best effort
         log_general.warning(f"sentiment recorder failed: {e}")
+    try:
+        fear_greed.refresh()
+    except Exception as e:  # noqa: BLE001 - the index is refreshed again later
+        log_general.warning(f"fear & greed refresh failed: {e}")
     if cfg.whale_tracking_enabled:
         try:
             update_whale_data()

@@ -63,6 +63,9 @@ SECTION_DEFAULTS: dict[str, dict[str, Any]] = {
         # Words that count as a mention, per symbol; the symbol itself by default.
         "keywords": {},
         "db_path": "data/sentiment.db",
+        # Daily Crypto Fear & Greed index (the fear_greed indicator); empty turns the live refresh off.
+        "fear_greed_url": "https://api.alternative.me/fng/?limit=0&format=json",
+        "fear_greed_refresh_hours": 4,
     },
     "costs": {
         # Per-side cost assumed for tokens without measured quotes.

@@ -144,6 +144,7 @@ _FUNCTIONS: dict[str, _Fn] = {
         ("score", "mentions"),
         takes_input=False,
     ),
+    "fear_greed": _Fn({}, lambda p, n: {"": 1}, takes_input=False),
 }
 
 
@@ -160,6 +161,8 @@ class EvalContext:
     symbol: str | None = None
     # (symbol, bar close times (L, N), window_hours) -> {"score", "mentions"}
     sentiment: Callable[[str | None, np.ndarray, float], dict[str, np.ndarray]] | None = None
+    # bar close times (L, N) -> the Fear & Greed index known at each close
+    fear_greed: Callable[[np.ndarray], np.ndarray] | None = None
     values: dict[str, Any] = field(default_factory=dict)
 
 
@@ -179,6 +182,9 @@ def _run_indicator(fn: str, params: dict[str, Any], source: Operand | None, ctx:
             nan = np.full(closes.shape, np.nan)
             return {"score": nan, "mentions": nan}
         return ctx.sentiment(ctx.symbol, closes, float(params["window_hours"]))
+    if fn == "fear_greed":
+        closes = ctx.times + ctx.period_seconds
+        return np.full(closes.shape, np.nan) if ctx.fear_greed is None else ctx.fear_greed(closes)
     assert source is not None
     x = np.broadcast_to(np.asarray(source(ctx), dtype=float), ctx.columns["close"].shape).astype(float)
     if fn == "sma":
@@ -221,6 +227,7 @@ class _Compiler:
         self._visiting: list[str] = []
         self._failed: set[str] = set()
         self.uses_sentiment = False
+        self.uses_fear_greed = False
 
     def error(self, path: str, message: str) -> None:
         self.errors.append(f"{path}: {message}")
@@ -295,6 +302,7 @@ class _Compiler:
             spec=spec,
             hash=hashlib.sha256(canonical.encode()).hexdigest(),
             uses_sentiment=self.uses_sentiment,
+            uses_fear_greed=self.uses_fear_greed,
             _order=[self.compiled[n] for n in self.order],
             _entry=entry,
             _exit=exit_rule,
@@ -379,6 +387,8 @@ class _Compiler:
             return None
         if fn_name == "sentiment":
             self.uses_sentiment = True
+        if fn_name == "fear_greed":
+            self.uses_fear_greed = True
         needs = fn.need(params, input_need)
         self.needs[name] = needs
 
@@ -606,6 +616,7 @@ class Strategy:
     spec: dict[str, Any]
     hash: str
     uses_sentiment: bool
+    uses_fear_greed: bool
     _order: list[Callable[[EvalContext], None]]
     _entry: Rule
     _exit: Rule | None
@@ -616,10 +627,11 @@ class Strategy:
         times: np.ndarray,
         symbol: str | None = None,
         sentiment: Callable[[str | None, np.ndarray, float], dict[str, np.ndarray]] | None = None,
+        fear_greed: Callable[[np.ndarray], np.ndarray] | None = None,
     ) -> Evaluation:
         """Signals for the last bar of each window; arrays are ``(L, N)``."""
         columns = {c: np.asarray(bars[c], dtype=float) for c in COLUMNS}
-        ctx = EvalContext(columns, times, self.period_seconds, symbol, sentiment)
+        ctx = EvalContext(columns, times, self.period_seconds, symbol, sentiment, fear_greed)
         for step in self._order:
             step(ctx)
         entry = np.asarray(self._entry(ctx))[-1].astype(bool)

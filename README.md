@@ -29,7 +29,8 @@
 | Research pipeline | Gates, a held-out period, paper trading and automatic promotion and demotion |
 | Agent CLI | Every research and pipeline command prints one JSON object |
 | Kill switch | Flattens everything and pauses at a 15% drawdown |
-| Sentiment recorder | Records Reddit posts and comments as strategy inputs |
+| Sentiment recorder | Records Reddit posts and comments as strategy inputs, and imports archived ones for backtests |
+| Fear & Greed index | The daily Crypto Fear & Greed index as a strategy input |
 | Whale tracking | Watches configured wallets for accumulation or dumping *(opt-in)* |
 | Confluence filter | Sizes trades from whale activity, market regime, and sentiment *(opt-in)* |
 | Market regime | Scales positions down in bearish markets *(opt-in)* |
@@ -200,6 +201,8 @@ Each section is an object in `config.json`; keys you leave out keep their defaul
 | | `record` | Record while the bot runs | `true` |
 | | `request_interval_seconds` | Gap between Reddit requests | `65` |
 | | `keywords` | Words that count as a mention, per symbol, e.g. `{"SOL": ["SOL", "Solana"]}`; the symbol by default | `{}` |
+| | `fear_greed_url` | Where the [Fear & Greed index](#fear--greed-index) comes from; empty stops the bot from refreshing it | `https://api.alternative.me/fng/?limit=0&format=json` |
+| | `fear_greed_refresh_hours` | How often the running bot refreshes the index | `4` |
 
 ### Advanced settings
 
@@ -346,6 +349,10 @@ The feeds have no history. For backtests, import archived posts and comments wit
 
 Sentiment is known only where it was covered. Each import covers its subreddits from `--after` (or the file's first item) to `--before` (or its last item), and live recording covers a subreddit from its first successful fetch on. A bar's `mentions` and `score` are missing unless its whole window lies inside the coverage of **every** configured subreddit: a hole between an import and the start of recording, or a newly added subreddit without history, reads as missing, never as zero mentions. Imports that end and start on the same day join up. Import posts and comments together, since coverage can't tell them apart.
 
+### Fear & Greed index
+
+The `fear_greed` indicator reads the daily [Crypto Fear & Greed index](https://alternative.me/crypto/fear-and-greed-index/) (0 to 100) from `sentiment.fear_greed_url`. `backfill --fear-greed` stores its whole history in `data/sentiment.db` (safe to repeat), and the running bot refreshes it every `sentiment.fear_greed_refresh_hours`. A day's value describes the whole day, so a bar sees it only once the day is over: a bar closing at or after 00:00 UTC on the next day reads it. Before the first value, and on days the index has no value, the indicator is missing; it never falls back to an older day. Backtests, paper books and the live loop read it the same way. `status` shows the stored range.
+
 </details>
 
 ## Custom strategies
@@ -394,6 +401,7 @@ A strategy is a JSON file, `strategies/{name}.json`, where `name` is lowercase w
 | `atr` | `period` (14), `method` (`wilder` or `sma`) | one value |
 | `stoch` | `k` (14), `d` (3), `smooth` (3) | `k`, `d` |
 | `sentiment` | `window_hours` (24) | `score`, `mentions` (see [Sentiment recorder](#sentiment-recorder)) |
+| `fear_greed` | none | one value, 0 (extreme fear) to 100 (extreme greed), from the previous UTC day (see [Fear & Greed index](#fear--greed-index)) |
 
 - **Series** are `open`, `high`, `low`, `close`, `volume`, an indicator name, or `name.output` for indicators with several outputs (`bb.lower`). Numbers work anywhere a series does.
 - **Arithmetic:** `{"add": [a, b]}`, `sub`, `mul`, `div`, and `{"shift": [series, bars]}` for an earlier bar's value.
@@ -440,13 +448,14 @@ Every strategy variant counts: the deflated Sharpe ratio corrects for the number
 | Command | Output |
 | --- | --- |
 | `backfill [--symbols A,B] [--timeframes 1h,15m] [--days N]` | Per series: bars added, range, gaps, duplicates, bad bars |
+| `backfill --fear-greed` | The [Fear & Greed index](#fear--greed-index) history instead of candles: days received, inserted, updated, the stored range and missing days |
 | `import-sentiment <file> [<file> ...] [--subreddits a,b] [--after YYYY-MM-DD] [--before YYYY-MM-DD]` | Per file: lines read, kept, inserted, duplicates, skipped (other subreddits, outside the days), bad lines, and the coverage it recorded per subreddit |
 | `backtest <strategy> <symbol>` | `verdict`, `reasons`, metrics, folds, benchmarks, gates, deflated Sharpe, trial number and count, flags, `rpc` |
 | `candidates [--symbol S]` | The pipeline, trials, and whether trading is paused |
 | `promote <strategy> <symbol>` | The transition, or a refusal code (`not_passed`, `costs_unmeasured`, `paper_full`, `not_ready`, `holdout_insufficient`, `holdout_failed`, ...) |
 | `demote <strategy> <symbol> [--reason R]` | The transition; `demote_pending` while the bot still has to sell |
 | `measure-costs [--symbols A,B]` | The cost model per token, from fresh Jupiter quotes; `measure_incomplete` names any token not fully measured |
-| `status [--healthcheck]` | Bot mode and heartbeat, positions and P&L after costs, paper books, paused, RPC usage today, recorder health and sentiment coverage, warnings; `--healthcheck` exits 1 without a fresh heartbeat |
+| `status [--healthcheck]` | Bot mode and heartbeat, positions and P&L after costs, paper books, paused, RPC usage today, recorder health and sentiment coverage, the stored Fear & Greed range, warnings; `--healthcheck` exits 1 without a fresh heartbeat |
 | `report` | `{"text": ...}`: a Discord-ready summary of at most 1,900 characters |
 | `approve <strategy> <symbol>` | Lets paper → live proceed when `require_approval` is on (interactive terminal only) |
 | `reopen <strategy> <symbol>` | Re-opens a hash rejected by the old fixed held-out trade minimum, once, after replaying its stored held-out period under the current rule (interactive terminal only) |

@@ -18,11 +18,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NoReturn
 
+import httpx
 import numpy as np
 
 from sol_trade import (
     costs,
     evaluation,
+    fear_greed,
     heartbeat,
     history,
     ledger,
@@ -100,6 +102,11 @@ def _refused(e: promotion.Refused) -> CliError:
 
 
 def cmd_backfill(args: argparse.Namespace) -> dict[str, Any]:
+    if args.fear_greed:
+        try:
+            return {"fear_greed": fear_greed.backfill()}
+        except (httpx.HTTPError, ValueError) as e:
+            raise CliError("fear_greed_unavailable", f"{type(e).__name__}: {e}") from e
     cfg = config()
     symbols = _symbols(args.symbols, list(cfg.secondary_mint_symbols))
     if not symbols:
@@ -310,6 +317,7 @@ def _status() -> dict[str, Any]:
         "live_candidates": [c.as_dict() for c in promotion.candidates(states=promotion.MANAGED)],
         "rpc_today": usage,
         "sentiment": sentiment.stats(),
+        "fear_greed": fear_greed.stats(),
         "warnings": warnings,
     }
 
@@ -405,6 +413,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--symbols", help="comma-separated symbols (default: traded tokens)")
     p.add_argument("--timeframes", help="comma-separated timeframes (default: backfill.default_timeframes)")
     p.add_argument("--days", type=int, help="days of history (default: backfill.default_days)")
+    p.add_argument("--fear-greed", action="store_true",
+                   help="fetch the Fear & Greed index history (sentiment.fear_greed_url) instead of candles")
     p.set_defaults(run=cmd_backfill)
 
     p = sub.add_parser("import-sentiment", help="import archived Reddit posts and comments (NDJSON)")

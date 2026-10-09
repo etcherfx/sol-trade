@@ -31,6 +31,7 @@ _TEST_CONFIG = {
     ],
     "secondary_mint_symbols": ["SOL", "JUP"],
     "strategy": "default",
+    "sentiment": {"fear_greed_url": ""},  # the live loop never fetches the index in tests
 }
 
 

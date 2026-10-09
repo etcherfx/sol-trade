@@ -87,6 +87,8 @@
     "subreddits": ["solana", "CryptoCurrency"],
     "record": true,
     "request_interval_seconds": 65,
-    "keywords": {"SOL": ["SOL", "Solana"]}
+    "keywords": {"SOL": ["SOL", "Solana"]},
+    "fear_greed_url": "https://api.alternative.me/fng/?limit=0&format=json",
+    "fear_greed_refresh_hours": 4
   }
 }

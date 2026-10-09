@@ -32,14 +32,18 @@ def compute_signals(
     frame: pd.DataFrame,
     symbol: str | None = None,
     sentiment: Callable[..., Any] | None = None,
+    fear_greed: Callable[..., Any] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Entry and exit flags per bar of ``frame``; bar ``i`` uses the window ending at ``i``.
 
     Bars without a full window of history get no signal. Strategies that
-    read sentiment get the recorded features unless ``sentiment`` is given.
+    read sentiment or the Fear & Greed index get the stored values unless
+    ``sentiment`` or ``fear_greed`` is given.
     """
     if sentiment is None and strategy.uses_sentiment:
         from sol_trade.sentiment import features as sentiment
+    if fear_greed is None and strategy.uses_fear_greed:
+        from sol_trade.fear_greed import values as fear_greed
     n = len(frame)
     entry = np.zeros(n, dtype=bool)
     exit_ = np.zeros(n, dtype=bool)
@@ -52,7 +56,7 @@ def compute_signals(
         stop = min(start + _CHUNK, n - length + 1)  # window starts in [start, stop)
         span = slice(start, stop + length - 1)
         bars = {c: windows(v[span], length) for c, v in series.items()}
-        result = strategy.evaluate(bars, windows(times[span], length), symbol, sentiment)
+        result = strategy.evaluate(bars, windows(times[span], length), symbol, sentiment, fear_greed)
         entry[start + length - 1 : stop + length - 1] = result.entry
         exit_[start + length - 1 : stop + length - 1] = result.exit
     return entry, exit_
