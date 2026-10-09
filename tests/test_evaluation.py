@@ -1,17 +1,35 @@
 """Walk-forward evaluation: splits, folds, trials, deflated Sharpe and verdicts."""
 
 import math
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from sol_trade import evaluation, rpc, spec
+from sol_trade import backtest, evaluation, rpc, spec
 from sol_trade.config import config
 from sol_trade.costs import CostModel
 
 HOUR = 3600
 FREE = CostModel("TKN", "measured", ((0.0, 5.0),), 0.0)
+# Real 6h SOL/USDC bars from Coinbase (2022-08-31 to 2026-10-09), exported from a runtime candle store.
+SOL_6H = Path(__file__).parent / "fixtures" / "sol_usdc_6h_coinbase.csv.gz"
+SOL_COST = CostModel("SOL", "measured", ((25.0, 2.3), (250.0, 2.3)), 0.0)  # as measured that day
+# A pre-registered research strategy, verbatim: its hash must not change.
+TREND_EMA_6H = {
+    "schema": 1,
+    "name": "trend_ema_6h",
+    "description": "Pre-registered 2026-10-09. Time-series trend following: 6h EMA 21/84 (~5d/21d) crossover, "
+    "flat otherwise. Wide disaster stop only; exits on the reverse cross. Basis: TSMOM/trend evidence in crypto.",
+    "timeframe": "6h",
+    "lookback": 200,
+    "risk": {"stoploss": 12, "takeprofit": 0, "trailing_stoploss": 0, "trailing_stoploss_target": 0},
+    "indicators": {"fast": {"fn": "ema", "period": 21}, "slow": {"fn": "ema", "period": 84}},
+    "entry": {"crosses_above": ["fast", "slow"]},
+    "exit": {"crosses_below": ["fast", "slow"]},
+}
+TREND_EMA_6H_HASH = "89b1801c9ade2a4b0504f963bcc508b3ed0e05bdfbdacc06dee9032c06f5bd9b"
 SPEC = {
     "schema": 1,
     "name": "swing",
@@ -156,3 +174,49 @@ def test_holdout_fails_on_losses(strategy):
     result = evaluation.holdout(losing, "TKN", _market(), FREE)
     assert not result["passed"]
     assert any(r.startswith("holdout_return_pct") for r in result["reasons"])
+
+
+@pytest.fixture
+def sol_6h() -> pd.DataFrame:
+    return pd.read_csv(SOL_6H)
+
+
+def test_drawdown_is_measured_on_the_capital_live_risks(sol_6h):
+    """trend_ema_6h on real SOL: 39% drawdown on one fully invested $100 book, 18% on the live $500.
+
+    The kill switch judges the same 15% limit on risk.max_live_capital, so the
+    gates must too; an entry spends risk.max_trade_size of it.
+    """
+    strategy = spec.compile_spec(TREND_EMA_6H)
+    assert strategy.hash == TREND_EMA_6H_HASH  # position_size defaults: existing specs keep their hash
+
+    result = evaluation.evaluate(strategy, "SOL", sol_6h, SOL_COST, record=False)
+
+    assert result["data"]["capital"] == config().risk["max_live_capital"] == 500
+    assert result["data"]["position_notional"] == 100
+    metrics = result["metrics"]
+    assert metrics["trades"] == 36
+    assert metrics["max_drawdown_pct"] == pytest.approx(18.2162, abs=1e-3)
+    assert result["benchmarks"]["buy_and_hold"]["notional"] == 100  # the same position, held
+    sim_capital, trade_size = backtest.sizing()
+    assert (sim_capital, trade_size) == (500, 100)
+
+
+def test_position_size_scales_entries_and_drawdown(sol_6h):
+    full = spec.compile_spec(TREND_EMA_6H)
+    half = spec.compile_spec({**TREND_EMA_6H, "risk": {**TREND_EMA_6H["risk"], "position_size": 0.5}})
+    capital, trade_size = backtest.sizing()
+    signals = backtest.compute_signals(full, sol_6h)
+    runs = [
+        backtest.simulate(s, "SOL", sol_6h, *signals, s.lookback - 1, len(sol_6h), SOL_COST, capital, trade_size)
+        for s in (full, half)
+    ]
+
+    assert half.hash != TREND_EMA_6H_HASH
+    assert len(runs[0].trades) == len(runs[1].trades) > 30
+    # Flat costs: half the position is half the P&L on the same capital, bar by bar.
+    np.testing.assert_allclose(runs[1].equity, capital + (runs[0].equity - capital) / 2, rtol=1e-9)
+    assert backtest.max_drawdown(runs[1].equity, capital) < backtest.max_drawdown(runs[0].equity, capital)
+    result = evaluation.evaluate(half, "SOL", sol_6h, SOL_COST, record=False)
+    assert result["data"]["position_notional"] == 50
+    assert result["benchmarks"]["buy_and_hold"]["notional"] == 50

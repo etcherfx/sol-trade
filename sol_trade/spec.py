@@ -36,6 +36,7 @@ _BUILTIN_DIR = Path(__file__).with_name("builtin_strategies")
 
 _TOP_KEYS = {"schema", "name", "description", "timeframe", "lookback", "risk", "indicators", "entry", "exit"}
 _RISK_KEYS = ("stoploss", "takeprofit", "trailing_stoploss", "trailing_stoploss_target")
+_POSITION_SIZE = "position_size"
 _COMPARE: dict[str, Callable[[Any, Any], Any]] = {
     ">": np.greater,
     ">=": np.greater_equal,
@@ -306,8 +307,9 @@ class _Compiler:
         if not isinstance(risk, dict):
             self.error("risk", "must be an object")
             risk = {}
-        for key in sorted(set(risk) - set(_RISK_KEYS)):
-            self.error(f"risk.{key}", f"unknown key; allowed: {', '.join(_RISK_KEYS)}")
+        allowed = (*_RISK_KEYS, _POSITION_SIZE)
+        for key in sorted(set(risk) - set(allowed)):
+            self.error(f"risk.{key}", f"unknown key; allowed: {', '.join(allowed)}")
         for key in _RISK_KEYS:
             value = risk.get(key)
             if value is None:
@@ -320,7 +322,13 @@ class _Compiler:
             self.error("risk.stoploss", "must be below 100 percent")
         if 0 < values.get("trailing_stoploss", 0) >= 100:
             self.error("risk.trailing_stoploss", "must be below 100 percent")
-        return Risk(**{k: values.get(k, 0.0) for k in _RISK_KEYS})
+        size = risk.get(_POSITION_SIZE)
+        if size is None:
+            size = 1.0
+        elif not _is_number(size) or not 0 < size <= 1:
+            self.error(f"risk.{_POSITION_SIZE}", "must be a fraction of risk.max_trade_size above 0 and up to 1, or null")
+            size = 1.0
+        return Risk(**{k: values.get(k, 0.0) for k in _RISK_KEYS}, position_size=float(size))
 
     # -- indicators
 
@@ -568,13 +576,15 @@ class Risk:
 
     The trailing stop sits ``trailing_stoploss`` percent under the highest
     closed-bar high once a high reaches ``trailing_stoploss_target`` percent
-    above entry (0: from entry on).
+    above entry (0: from entry on). ``position_size`` is the share of
+    ``risk.max_trade_size`` an entry spends.
     """
 
     stoploss: float = 0.0
     takeprofit: float = 0.0
     trailing_stoploss: float = 0.0
     trailing_stoploss_target: float = 0.0
+    position_size: float = 1.0
 
 
 @dataclass

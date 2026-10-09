@@ -342,7 +342,7 @@ def _to_paper(candidate: Candidate, strategy: Strategy, symbol: str) -> dict[str
         if not result["passed"]:
             return _transition(candidate, REJECTED, "held-out period failed", _evidence(result))
     ledger.delete_book(candidate.book_name)
-    capital = float(config().risk["max_trade_size"])
+    capital = backtest.sizing()[0]
     ledger.save_meta(candidate.book_name, {"cash": capital, "capital": capital, "observed_bars": 0})
     return _transition(candidate, PAPER, "held-out period passed", {"holdout": candidate.holdout or "passed"})
 
@@ -436,7 +436,7 @@ def live_readiness(candidate: Candidate, now: float | None = None) -> tuple[list
     reasons: list[str] = []
     meta = ledger.load_meta(candidate.book_name)
     strategy = candidate.compile()
-    capital = float(meta.get("capital", cfg.risk["max_trade_size"]))
+    capital = float(meta.get("capital", backtest.sizing()[0]))
 
     days = (now - candidate.entered_at) / 86400
     if days < p["min_paper_days"]:
@@ -511,7 +511,7 @@ def _replay_comparison(
     signals = backtest.compute_signals(strategy, frame, candidate.symbol)
     sim = backtest.simulate(
         strategy, candidate.symbol, frame, *signals, start, end, costs.model_for(candidate.symbol), capital,
-        force_close=False,
+        backtest.sizing()[1], force_close=False,
     )
     paper = sum(t["pnl"] for t in paper_trades if t["exit_ts"] <= last_bar_ts)
     replay = sum(t.pnl for t in sim.trades if t.exit_ts <= last_bar_ts)
@@ -588,7 +588,7 @@ def _strategy_health(book: Book, candidate: Candidate, price: float | None, now:
     p = config().promotion
     problems = []
     trades = [t for t in ledger.trades(book.name, candidate.symbol) if t["strategy_hash"] == candidate.hash]
-    capital = float(config().risk["max_trade_size"])
+    capital = backtest.sizing()[0]  # the capital live risks, like every other drawdown gate
     equity, peak, worst = capital, capital, 0.0
     for t in trades:
         equity += t["pnl"]

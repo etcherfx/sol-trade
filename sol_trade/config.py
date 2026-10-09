@@ -33,7 +33,8 @@ SECTION_DEFAULTS: dict[str, dict[str, Any]] = {
         # Total primary-token capital the live book may deploy, and per trade.
         "max_live_capital": 500.0,
         "max_trade_size": 100.0,
-        # Live equity drawdown (percent from its high-water mark) that trips the kill switch.
+        # Drawdown (percent from the high-water mark of max_live_capital) that trips the kill switch;
+        # the backtest, held-out and paper gates measure on the same capital.
         "max_drawdown_pct": 15.0,
         # Positions worth less than this (USD) are written off instead of sold.
         "dust_threshold_usd": 1.0,

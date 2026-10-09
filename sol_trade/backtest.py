@@ -3,8 +3,10 @@
 Signals come from :meth:`Strategy.evaluate` on the same ``lookback``-bar
 windows the live loop builds, and every bar runs the engine's three steps
 (:meth:`Book.on_open`, :meth:`Book.on_low`, :meth:`Book.on_close`) with the
-shared cost model. Each trade books ``risk.max_trade_size`` of notional;
-equity is marked at every close. Nothing here calls the Solana RPC.
+shared cost model. The book holds the capital the live bot risks,
+``risk.max_live_capital``, and each entry spends ``risk.max_trade_size``
+times the strategy's ``position_size``, as live; equity (and so drawdown) is
+marked on that capital at every close. Nothing here calls the Solana RPC.
 """
 
 import math
@@ -56,6 +58,18 @@ def compute_signals(
     return entry, exit_
 
 
+def sizing() -> tuple[float, float]:
+    """``(capital, max trade size)`` of every simulation: the live bot's, so gates judge what live risks."""
+    risk = config().risk
+    return float(risk["max_live_capital"]), float(risk["max_trade_size"])
+
+
+def position_notional(strategy: Strategy) -> float:
+    """What one entry of ``strategy`` spends (before the cash and capital caps)."""
+    capital, trade_size = sizing()
+    return min(trade_size * strategy.risk.position_size, capital)
+
+
 @dataclass
 class Simulation:
     equity: np.ndarray  # marked at each close of the simulated bars
@@ -76,10 +90,11 @@ def simulate(
     end: int,
     model: CostModel,
     capital: float,
+    trade_size: float,
     force_close: bool = True,
 ) -> Simulation:
-    """Run bars ``[start, end)`` of ``frame`` through a fresh book that starts flat."""
-    book = Book("backtest", capital, SimExecutor(lambda _symbol: model), capital, capital)
+    """Run bars ``[start, end)`` of ``frame`` through a fresh book that starts flat with ``capital``."""
+    book = Book("backtest", capital, SimExecutor(lambda _symbol: model), trade_size, capital)
     risk = strategy.risk
     ts = frame["ts"].to_numpy()
     opens, highs, lows, closes = (frame[c].to_numpy(dtype=float) for c in ("open", "high", "low", "close"))
@@ -169,10 +184,15 @@ def moments(returns: np.ndarray) -> dict[str, float]:
     }
 
 
-def buy_and_hold(frame: pd.DataFrame, start: int, end: int, model: CostModel, capital: float) -> Simulation:
-    """Buy at the first open, hold, sell at the last close: one round trip of costs."""
+def buy_and_hold(
+    frame: pd.DataFrame, start: int, end: int, model: CostModel, capital: float, notional: float | None = None
+) -> Simulation:
+    """Buy ``notional`` (default: all of ``capital``) at the first open, hold, sell at the last close.
+
+    One round trip of costs; the rest of the capital stays in cash.
+    """
     opens, closes = frame["open"].to_numpy(dtype=float), frame["close"].to_numpy(dtype=float)
-    notional = capital - model.network_fee_usd
+    notional = min(capital if notional is None else notional, capital - model.network_fee_usd)
     entry_cost = model.cost_usd(notional)
     size = notional * (1 - model.bps(notional) / 1e4) / opens[start]
     cash = capital - notional - model.network_fee_usd
@@ -185,10 +205,16 @@ def buy_and_hold(frame: pd.DataFrame, start: int, end: int, model: CostModel, ca
     return Simulation(equity, [], 1.0, entry_cost + exit_cost, capital)
 
 
-def benchmarks(frame: pd.DataFrame, start: int, end: int, model: CostModel, capital: float, period_seconds: int) -> dict[str, Any]:
-    hold = metrics(buy_and_hold(frame, start, end, model, capital), period_seconds)
+def benchmarks(
+    frame: pd.DataFrame, start: int, end: int, model: CostModel, capital: float, period_seconds: int, notional: float
+) -> dict[str, Any]:
+    """Buy-and-hold of the same position size on the same capital, and cash."""
+    hold = metrics(buy_and_hold(frame, start, end, model, capital, notional), period_seconds)
     return {
-        "buy_and_hold": {k: hold[k] for k in ("total_return_pct", "max_drawdown_pct", "sharpe", "sortino")},
+        "buy_and_hold": {
+            **{k: hold[k] for k in ("total_return_pct", "max_drawdown_pct", "sharpe", "sortino")},
+            "notional": round(notional, 4),
+        },
         "cash": {"total_return_pct": 0.0, "max_drawdown_pct": 0.0, "sharpe": 0.0, "sortino": 0.0},
     }
 
@@ -207,12 +233,14 @@ def run(
     ``start`` must leave ``lookback - 1`` bars of history before it.
     """
     model = model or cost_module.model_for(symbol)
-    capital = float(config().risk["max_trade_size"])
+    capital, trade_size = sizing()
     entry, exit_ = signals or compute_signals(strategy, frame, symbol)
-    sim = simulate(strategy, symbol, frame, entry, exit_, start, end, model, capital)
+    sim = simulate(strategy, symbol, frame, entry, exit_, start, end, model, capital, trade_size)
     return {
         "metrics": metrics(sim, strategy.period_seconds),
-        "benchmarks": benchmarks(frame, start, end, model, capital, strategy.period_seconds),
+        "benchmarks": benchmarks(
+            frame, start, end, model, capital, strategy.period_seconds, position_notional(strategy)
+        ),
         "trades": [t.to_dict() for t in sim.trades],
         "simulation": sim,
         "costs": model.as_dict(),

@@ -178,7 +178,7 @@ Each section is an object in `config.json`; keys you leave out keep their defaul
 | --- | --- | --- | --- |
 | `risk` | `max_live_capital` | Capital the bot may deploy (and the dry run's virtual cash) | `500` |
 | | `max_trade_size` | Largest single buy | `100` |
-| | `max_drawdown_pct` | Kill switch and every drawdown gate | `15` |
+| | `max_drawdown_pct` | Kill switch and every drawdown gate, all measured on `max_live_capital` | `15` |
 | | `dust_threshold_usd` | Positions worth less are written off instead of sold | `1` |
 | `rpc` | `max_cu_per_second` | Ceiling for all Solana RPC traffic | `30` |
 | | `daily_cu_budget` | Past this, only the balance reads swaps need still run | `600000` |
@@ -365,7 +365,7 @@ A strategy is a JSON file, `strategies/{name}.json`, where `name` is lowercase w
 | `name` | Must equal the file name |
 | `timeframe` | Bar size the strategy trades on, e.g. `15m`, `1h`, `4h` (any timeframe the exchange offers) |
 | `lookback` | Bars of history each decision sees; must cover the indicators' warm-up |
-| `risk` | Percentages; `0` or a missing key turns that exit off. The trailing stop sits `trailing_stoploss`% under the highest closed-bar high once a high reaches `trailing_stoploss_target`% above entry |
+| `risk` | Percentages; `0` or a missing key turns that exit off. The trailing stop sits `trailing_stoploss`% under the highest closed-bar high once a high reaches `trailing_stoploss_target`% above entry. `position_size` (optional, above 0 and up to 1, default `1`) is the share of `risk.max_trade_size` each entry spends, in backtests, paper and live alike |
 | `indicators` | Named indicators: `{"fn": ..., parameters, "input": series}`; `input` defaults to `close` |
 | `entry` / `exit` | Rules evaluated on each closed bar; `exit` is optional |
 
@@ -395,6 +395,8 @@ The pipeline decides which strategies trade, with evidence for every step. Resea
 1. **Backfill** candles with `backfill`; each series is checked for gaps, duplicates and bad bars.
 2. **Measure costs** with `measure-costs`: Jupiter quotes at `costs.probe_sizes_usd` in both directions give a per-size cost curve (times `costs.safety_multiplier`). Tokens without quotes use `costs.default_cost_bps` and are flagged `COSTS_DEFAULT`.
 3. **Backtest** with `backtest <strategy> <symbol>`. The newest `gates.holdout_days` are held out. The rest runs as one backtest after costs, sliced into `gates.folds` folds, against buy-and-hold and cash. The verdict is `PASS`, `FAIL` or `INSUFFICIENT_EVIDENCE`, with reasons.
+
+   Every simulation (backtest, held-out period, paper book) holds the capital the live bot risks, `risk.max_live_capital`, and each entry spends `risk.max_trade_size` times the strategy's `position_size`. Returns and drawdowns are percentages of that capital, the same base the kill switch uses. Buy-and-hold holds the same position size on the same capital.
 4. **Promote** a `PASS` with `promote <strategy> <symbol>`: the held-out period runs once per hash. A failure rejects the hash for good; a pass starts a paper book.
 5. **Paper** books trade the strategy on live candles with modeled costs. The bot moves a paper candidate to live by itself once its evidence qualifies, and retires it after `promotion.max_paper_days` if it never does.
 6. **Live** strategies are added to `config.json` (atomically, with a backup in `data/config_backups/`) and trade from the spec that was tested.
@@ -402,7 +404,7 @@ The pipeline decides which strategies trade, with evidence for every step. Resea
 | Gate | Passes when | Config |
 | --- | --- | --- |
 | Evidence | At least 30 trades and under 2% missing bars; otherwise `INSUFFICIENT_EVIDENCE` | `gates.min_trades`, `gates.max_gap_fraction` |
-| Drawdown | Max drawdown ≤ 15% | `risk.max_drawdown_pct` |
+| Drawdown | Max drawdown ≤ 15% of the live capital | `risk.max_drawdown_pct` |
 | Sharpe | Above 0 and above buy-and-hold | |
 | Folds | At least 3 of 4 folds profitable | `gates.folds`, `gates.min_positive_folds` |
 | Deflated Sharpe | ≥ 0.95: the Sharpe ratio still beats the best of the variants tried on that symbol and timeframe | `gates.min_deflated_sharpe` |
@@ -411,7 +413,7 @@ The pipeline decides which strategies trade, with evidence for every step. Resea
 
 Every strategy variant counts: the deflated Sharpe ratio corrects for the number of distinct hashes tested on a symbol and timeframe, so trying many variants raises the bar.
 
-**Demotion.** A live strategy is flattened and removed from `config.json` when its own drawdown reaches `promotion.demote_drawdown_pct` (10%), when its last `demote_window_days` (60) lose money over at least `demote_min_trades` (10) trades, when its fills cost more than `max_cost_divergence_bps` (50) above the model, or on `demote`.
+**Demotion.** A live strategy is flattened and removed from `config.json` when its own drawdown (on `risk.max_live_capital`) reaches `promotion.demote_drawdown_pct` (10%), when its last `demote_window_days` (60) lose money over at least `demote_min_trades` (10) trades, when its fills cost more than `max_cost_divergence_bps` (50) above the model, or on `demote`.
 
 **Kill switch.** When the bot's capital (`risk.max_live_capital` plus realized and open P&L) falls `risk.max_drawdown_pct` below its high, every position is sold and entries pause until a human runs `resume`.
 

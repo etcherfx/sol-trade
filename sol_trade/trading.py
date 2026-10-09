@@ -454,8 +454,8 @@ def _update_optional_layers() -> None:
 def _run_paper_books(now: float | None = None) -> None:
     """Advance every paper candidate's virtual book; failures stay with that candidate."""
     for candidate in promotion.candidates(states=(promotion.PAPER,)):
-        capital = float(config().risk["max_trade_size"])
-        book = _persist_and_log(Book(candidate.book_name, capital, SimExecutor(costs.model_for), capital, capital))
+        capital, trade_size = backtest.sizing()
+        book = _persist_and_log(Book(candidate.book_name, capital, SimExecutor(costs.model_for), trade_size, capital))
         ledger.load_book(book, [candidate.symbol])
         try:
             view = run_symbol(book, candidate.symbol, candidate.compile(), now=now)

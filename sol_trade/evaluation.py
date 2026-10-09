@@ -180,6 +180,8 @@ def _data_info(frame: pd.DataFrame, strategy: Strategy, cut: Split) -> dict[str,
         "selection_end": _iso(int(ts.iat[cut.holdout_start])) if cut.holdout_start < len(frame) else None,
         "holdout_bars": cut.holdout_bars,
         "gap_fraction": round(history.gap_fraction(selection, strategy.timeframe), 6),
+        "capital": backtest.sizing()[0],
+        "position_notional": backtest.position_notional(strategy),
     }
 
 
@@ -233,10 +235,11 @@ def evaluate(
         return result
 
     signals = backtest.compute_signals(strategy, frame, symbol)
-    capital = float(config().risk["max_trade_size"])
-    sim = backtest.simulate(strategy, symbol, frame, *signals, cut.start, cut.holdout_start, model, capital)
+    capital, trade_size = backtest.sizing()
+    notional = backtest.position_notional(strategy)
+    sim = backtest.simulate(strategy, symbol, frame, *signals, cut.start, cut.holdout_start, model, capital, trade_size)
     metrics = backtest.metrics(sim, strategy.period_seconds)
-    bench = backtest.benchmarks(frame, cut.start, cut.holdout_start, model, capital, strategy.period_seconds)
+    bench = backtest.benchmarks(frame, cut.start, cut.holdout_start, model, capital, strategy.period_seconds, notional)
     folds = fold_returns(sim, gates["folds"])
     if data["gap_fraction"] > gates["max_gap_fraction"]:
         flags.append(DATA_GAPS)
@@ -309,8 +312,8 @@ def holdout(
         result.update(passed=False, reasons=["no held-out bars; run backfill"], rpc=_rpc_delta(before))
         return result
     signals = backtest.compute_signals(strategy, frame, symbol)
-    capital = float(config().risk["max_trade_size"])
-    sim = backtest.simulate(strategy, symbol, frame, *signals, cut.holdout_start, cut.end, model, capital)
+    capital, trade_size = backtest.sizing()
+    sim = backtest.simulate(strategy, symbol, frame, *signals, cut.holdout_start, cut.end, model, capital, trade_size)
     metrics = backtest.metrics(sim, strategy.period_seconds)
     max_dd = float(config().risk["max_drawdown_pct"])
     checks = [
@@ -324,7 +327,8 @@ def holdout(
         passed=all(g["passed"] for g in checks),
         reasons=[_describe(g) for g in checks if not g["passed"]],
         metrics={k: v for k, v in metrics.items() if k != "sharpe_per_bar"},
-        benchmarks=backtest.benchmarks(frame, cut.holdout_start, cut.end, model, capital, strategy.period_seconds),
+        benchmarks=backtest.benchmarks(frame, cut.holdout_start, cut.end, model, capital, strategy.period_seconds,
+                                       backtest.position_notional(strategy)),
         gates=checks,
         data={
             "first": _iso(int(ts.iat[cut.holdout_start])),

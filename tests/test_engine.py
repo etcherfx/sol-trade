@@ -114,6 +114,14 @@ def test_size_order():
     assert size_order(cash=500, deployed=600, max_trade_size=100, max_capital=500) == 0
 
 
+def test_entry_spends_the_strategys_share_of_the_trade_size():
+    book = Book("test", 500.0, SimExecutor(lambda _s: FREE), 100.0, 500.0)
+    position = _enter(book, risk=Risk(stoploss=5, position_size=0.4))
+    assert position is not None
+    assert position.cost_basis == pytest.approx(40.0)
+    assert book.cash == pytest.approx(460.0)
+
+
 def test_costs_reduce_the_position_and_proceeds():
     model = CostModel("TKN", "measured", ((0.0, 50.0),), 0.1)  # 50 bps + $0.10 per swap
     book = Book("test", 100.0, SimExecutor(lambda _s: model), 100.0, 100.0)

@@ -89,6 +89,18 @@ def test_bad_parameters_and_keys():
     assert "indicators.fast.period: must be an integer from 1 to 1000" in joined
 
 
+def test_position_size_is_a_fraction_of_the_trade_size():
+    assert spec.compile_spec(_spec(), "fixture").risk.position_size == 1.0
+    half = spec.compile_spec(_spec(risk={"stoploss": 4, "position_size": 0.5}), "fixture")
+    assert half.risk.position_size == 0.5
+    assert half.hash != spec.compile_spec(_spec(), "fixture").hash  # part of the identity
+    for bad in (0, -0.1, 1.5, "half", True):
+        errors = _errors(_spec(risk={"position_size": bad}))
+        assert errors == [
+            "risk.position_size: must be a fraction of risk.max_trade_size above 0 and up to 1, or null"
+        ]
+
+
 def test_name_must_match_the_file():
     assert _errors(_spec(name="other")) == ["name: 'other' must equal the file name 'fixture'"]
 

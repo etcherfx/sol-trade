@@ -125,7 +125,7 @@ def test_promote_starts_a_paper_book(cfg, strategy, monkeypatch):
     result = _to_paper(strategy, monkeypatch)
     assert result["to"] == promotion.PAPER
     candidate = _candidate(strategy)
-    assert ledger.load_meta(candidate.book_name)["cash"] == config().risk["max_trade_size"]
+    assert ledger.load_meta(candidate.book_name)["cash"] == config().risk["max_live_capital"]
 
 
 def test_paper_slots_are_limited(cfg, strategy, monkeypatch):
@@ -222,12 +222,15 @@ def test_demoting_a_holding_strategy_waits_for_the_bot(cfg, strategy, monkeypatc
 
 
 def test_governor_demotes_on_strategy_drawdown(cfg, strategy, monkeypatch):
+    """Drawdown is measured on the capital live risks (max_live_capital), like every drawdown gate."""
     candidate = _live(strategy, monkeypatch)
     book = ledger.persist(Book(ledger.DRY_RUN, 500.0, SimExecutor(costs.model_for), 100.0, 500.0))
     ledger.record_trade(book, Trade("TKN", "parity", candidate.hash, 0, 60, 1.0, 0.88, 100, 100, 88, "stoploss"))
+    assert promotion.govern(book, {"TKN": 1.0}) == []  # $12 of $500 is 2.4%
+    ledger.record_trade(book, Trade("TKN", "parity", candidate.hash, 60, 120, 1.0, 0.52, 100, 100, 52, "stoploss"))
     done = promotion.govern(book, {"TKN": 1.0})
     assert done[0]["to"] == promotion.DEMOTED_STATE
-    assert "strategy drawdown 12.00%" in done[0]["reason"]
+    assert "strategy drawdown 12.00%" in done[0]["reason"]  # $60 of $500
 
 
 def test_governor_demotes_when_fills_cost_more_than_modeled(cfg, strategy, monkeypatch):

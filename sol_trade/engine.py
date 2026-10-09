@@ -349,7 +349,8 @@ class Book:
     ) -> Fill | None:
         cap = self.weight_cap(symbol) if self.weight_cap else None
         fee = self.executor.network_fee(symbol)
-        notional = size_order(self.cash - fee, self.deployed, self.max_trade_size, self.max_capital, cap)
+        trade_size = self.max_trade_size * risk.position_size
+        notional = size_order(self.cash - fee, self.deployed, trade_size, self.max_capital, cap)
         if self.gate is not None:
             notional *= max(min(self.gate(symbol, BUY), 1.0), 0.0)
         if notional < _MIN_ORDER:
