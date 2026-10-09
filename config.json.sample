@@ -8,22 +8,43 @@
   "secondary_weights": [],
   "token_strategies": {},
   "token_exchanges": {},
+  "token_mints": {},
   "price_update_seconds": 60,
   "max_slippage": 50,
   "strategy": "default",
   "data_exchange": "okx",
   "candles_path": "data/candles.db",
 
-  "whale_tracking_enabled": true,
+  "risk": {
+    "max_live_capital": 500,
+    "max_trade_size": 100,
+    "max_drawdown_pct": 15,
+    "dust_threshold_usd": 1
+  },
+
+  "rpc": {
+    "max_cu_per_second": 30,
+    "daily_cu_budget": 600000,
+    "method_cu": {},
+    "holdings_refresh_seconds": 600,
+    "balance_refresh_seconds": 900,
+    "sol_reserve_ttl_seconds": 3600
+  },
+
+  "whale_tracking_enabled": false,
   "whale_wallets": {},
   "whale_poll_interval_minutes": 5,
 
-  "confluence_enabled": true,
+  "confluence_enabled": false,
 
   "market_regime_enabled": false,
+  "market_regime_pair": "SOL/USDC",
 
   "sentiment_enabled": false,
   "sentiment_pause_hours": 4,
   "sentiment_threshold": -0.5,
-  "sentiment_crash_threshold": -0.7
+  "sentiment_crash_threshold": -0.7,
+  "sentiment": {
+    "subreddits": ["solana", "CryptoCurrency"]
+  }
 }

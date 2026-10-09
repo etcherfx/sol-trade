@@ -110,8 +110,8 @@ def _money(value: float) -> str:
 def _token_price(value: float) -> str:
     """Format a token price/level with enough decimals to stay meaningful.
 
-    Micro-cap tokens (e.g. BONK at $0.0000024) round to 0.0000 at the default
-    four decimals, so sub-mill values get eight instead.
+    Micro-cap tokens (e.g. one priced at $0.0000024) round to 0.0000 at the
+    default four decimals, so sub-mill values get eight instead.
     """
     if value and value < 0.001:
         return f"{value:.8f}"
@@ -148,7 +148,7 @@ def _wallet_fragments(state: UIState) -> StyleAndTextTuples:
     ]
     profit_style = "bold green" if state.total_profit >= 0 else "bold red"
     rows: list[tuple[str, str, str]] = [
-        ("Primary Balance", f"{state.primary_balance:,.4f} USDC", ""),
+        ("Primary Balance", f"{state.primary_balance:,.4f} {config().primary_mint_symbol}", ""),
         ("Reserved for Fees (SOL)", f"{state.reserved_fees:.4f} SOL", ""),
         ("Portfolio Value", _money(state.portfolio_value), ""),
         ("Total Account Value", _money(state.total_account_value), "bold"),
@@ -501,10 +501,17 @@ def run_ui(state: UIState) -> None:
             setattr(s, "strategy", config().strategy),
             setattr(s, "exchange", config().data_exchange),
             setattr(s, "candles_path", config().candles_path),
-            setattr(s, "wallet_address", _short_address(str(config().public_address))),
+            setattr(s, "wallet_address", _wallet_label()),
         )
     )
     asyncio.run(_run_app(build_application(state)))
+
+
+def _wallet_label() -> str:
+    try:
+        return _short_address(str(config().public_address))
+    except ValueError:
+        return "none (paper trading)"
 
 
 def _short_address(address: str) -> str:

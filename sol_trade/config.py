@@ -1,9 +1,9 @@
+import copy
 import json
 import os
 from typing import Any
 
 from dotenv import load_dotenv
-from solana.rpc.async_api import AsyncClient
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 
@@ -26,6 +26,46 @@ _STRUCTURAL_KEYS = (
     "jupiter_api_key",
 )
 
+# Nested settings sections: deep-merged over these defaults, so a config.json
+# that sets one key of a section keeps the defaults for the rest.
+SECTION_DEFAULTS: dict[str, dict[str, Any]] = {
+    "risk": {
+        # Total primary-token capital the live book may deploy, and per trade.
+        "max_live_capital": 500.0,
+        "max_trade_size": 100.0,
+        # Live equity drawdown (percent from its high-water mark) that trips the kill switch.
+        "max_drawdown_pct": 15.0,
+        # Positions worth less than this (USD) are written off instead of sold.
+        "dust_threshold_usd": 1.0,
+    },
+    "rpc": {
+        # Ceiling for the shared Solana RPC limiter, in compute units per second.
+        "max_cu_per_second": 30.0,
+        # Past this many CU in a UTC day only the balance reads swaps need still run.
+        "daily_cu_budget": 600000,
+        # Per-method CU overrides, e.g. {"getBalance": 10}; merged over the built-in table.
+        "method_cu": {},
+        # Display-only wallet holdings view; 0 turns it off.
+        "holdings_refresh_seconds": 600,
+        # How long a wallet balance read is reused before it's read again.
+        "balance_refresh_seconds": 900,
+        # How long the computed SOL fee reserve is reused.
+        "sol_reserve_ttl_seconds": 3600,
+    },
+    "sentiment": {
+        # Subreddits the sentiment layer reads; empty means nothing is read.
+        "subreddits": [],
+    },
+}
+
+
+def _merge_section(default: dict[str, Any], value: Any) -> dict[str, Any]:
+    """Overlay a config.json section on its defaults (unknown keys are kept)."""
+    merged = copy.deepcopy(default)
+    if isinstance(value, dict):
+        merged.update(value)
+    return merged
+
 
 def _file_mtime(path: str) -> float:
     try:
@@ -38,13 +78,19 @@ class Config:
     def __init__(
         self, config_path: str | None = None, dotenv_path: str | None = None
     ) -> None:
-        """Load settings; paths default to config.json and .env in the project root."""
+        """Load settings.
+
+        Paths default to ``SOLTRADE_CONFIG_PATH`` / ``SOLTRADE_DOTENV_PATH`` when
+        set, else config.json and .env in the project root.
+        """
+        root = os.path.join(os.path.dirname(__file__), "..")
         self.jupiter_api_key: str = ""
         self.private_key: str = ""
         self.rpc_https: str = "https://api.mainnet-beta.solana.com"
         self.jup_api: str = "https://api.jup.ag/swap/v2"
         self.primary_mint: str = ""
         self.primary_mint_symbol: str = ""
+        # Native SOL mint, a protocol constant (wrapped SOL uses the same address).
         self.sol_mint: str = "So11111111111111111111111111111111111111112"
         self.secondary_mints: list[str] = []
         self.secondary_mint_symbols: list[str] = []
@@ -56,28 +102,37 @@ class Config:
         # Per-token candle-data exchange overrides, keyed by symbol; missing ->
         # the global data_exchange.
         self.token_exchanges: dict[str, str] = {}
+        # Known mints by symbol beyond the traded set, for lookups and candidates.
+        self.token_mints: dict[str, str] = {}
         self.price_update_seconds: int = 60
         self.max_slippage: int = 50
         self.strategy: str = "default"
         self.data_exchange: str = "okx"
         self.candles_path: str = "data/candles.db"
-        self.path = config_path or os.path.join(os.path.dirname(__file__), "..", "config.json")
-        self.dotenv_path = dotenv_path or os.path.join(os.path.dirname(__file__), "..", ".env")
+        for section, defaults in SECTION_DEFAULTS.items():
+            setattr(self, section, copy.deepcopy(defaults))
+        self.path = config_path or os.getenv("SOLTRADE_CONFIG_PATH") or os.path.join(
+            root, "config.json"
+        )
+        self.dotenv_path = dotenv_path or os.getenv("SOLTRADE_DOTENV_PATH") or os.path.join(
+            root, ".env"
+        )
         load_dotenv(self.dotenv_path)
-        self._client: AsyncClient | None = None
+        self._client: Any = None
         self._decimals_cache: dict[str, int] = {}
 
-        # Whale Tracker (ENABLED by default)
-        self.whale_tracking_enabled: bool = True
+        # Whale Tracker (disabled — opt-in addon)
+        self.whale_tracking_enabled: bool = False
         self.whale_wallets: dict[str, list[str]] = {}
         self.whale_poll_interval_minutes: int = 5
         self.whale_data_path: str = "data/whale_data.json"
 
-        # Confluence Filter (ENABLED by default)
-        self.confluence_enabled: bool = True
+        # Confluence Filter (disabled — opt-in addon)
+        self.confluence_enabled: bool = False
 
-        # Market Regime (disabled — opt-in addon)
+        # Market Regime (disabled — opt-in addon); the pair is "BASE/QUOTE"
         self.market_regime_enabled: bool = False
+        self.market_regime_pair: str = ""
         self.regime_data_path: str = "data/regime_data.json"
 
         # Sentiment Circuit Breaker (disabled — opt-in addon)
@@ -89,19 +144,25 @@ class Config:
         self.load_config()
         self._config_mtime: float = _file_mtime(self.path)
 
+    # Section attributes, typed for readers (values come from SECTION_DEFAULTS).
+    risk: dict[str, Any]
+    rpc: dict[str, Any]
+    sentiment: dict[str, Any]
+
     def _apply_config_file(self) -> None:
         default_config: dict[str, Any] = {
             "jupiter_api_key": "",
             "private_key": "",
             "rpc_https": "https://api.mainnet-beta.solana.com",
             "jup_api": "https://api.jup.ag/swap/v2",
-            "primary_mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-            "primary_mint_symbol": "USDC",
-            "secondary_mints": ["So11111111111111111111111111111111111111112"],
-            "secondary_mint_symbols": ["SOL"],
+            "primary_mint": "",
+            "primary_mint_symbol": "",
+            "secondary_mints": [],
+            "secondary_mint_symbols": [],
             "secondary_weights": [],
             "token_strategies": {},
             "token_exchanges": {},
+            "token_mints": {},
             "price_update_seconds": 60,
             "max_slippage": 50,
             "strategy": "default",
@@ -109,16 +170,17 @@ class Config:
             "candles_path": "data/candles.db",
 
             # Whale Tracker
-            "whale_tracking_enabled": True,
+            "whale_tracking_enabled": False,
             "whale_wallets": {},
             "whale_poll_interval_minutes": 5,
             "whale_data_path": "data/whale_data.json",
 
             # Confluence Filter
-            "confluence_enabled": True,
+            "confluence_enabled": False,
 
             # Market Regime
             "market_regime_enabled": False,
+            "market_regime_pair": "",
             "regime_data_path": "data/regime_data.json",
 
             # Sentiment Circuit Breaker
@@ -134,12 +196,16 @@ class Config:
                 config_data: dict[str, Any] = json.load(file)
             except json.JSONDecodeError as e:
                 raise ValueError(f"Error loading config: {e}") from e
+        if not isinstance(config_data, dict):
+            raise ValueError("Error loading config: the top level must be a JSON object")  # noqa: TRY004 - callers handle ValueError
 
         for key, fallback in default_config.items():
             value = config_data.get(key, fallback)
             if value in ("", None):
                 value = fallback
             setattr(self, key, value)
+        for section, defaults in SECTION_DEFAULTS.items():
+            setattr(self, section, _merge_section(defaults, config_data.get(section)))
 
         # Normalize portfolio weights to sum to 1 (empty list = equal split).
         weights = self.secondary_weights
@@ -154,10 +220,9 @@ class Config:
             weights = []
         self.secondary_weights = weights
 
-        if not isinstance(self.token_strategies, dict):
-            self.token_strategies = {}
-        if not isinstance(self.token_exchanges, dict):
-            self.token_exchanges = {}
+        for attr in ("token_strategies", "token_exchanges", "token_mints"):
+            if not isinstance(getattr(self, attr), dict):
+                setattr(self, attr, {})
 
         self._config_mtime = _file_mtime(self.path)
 
@@ -179,9 +244,9 @@ class Config:
     def reload_config(self) -> None:
         """Re-read config.json for lightweight settings (hot-reload).
 
-        Structural keys (tokens, RPC, exchange) and credentials are pinned —
-        changing those still requires a restart. A malformed or invalid token
-        set keeps the previous configuration.
+        Structural keys (primary token, RPC, exchange) and credentials are
+        pinned — changing those still requires a restart. A malformed or
+        invalid token set keeps the previous configuration.
         """
         pinned = {key: getattr(self, key) for key in _STRUCTURAL_KEYS}
         token_set = {
@@ -216,10 +281,18 @@ class Config:
 
     def _validate_config(self) -> None:
         """Validate that critical configuration fields are properly set."""
+        if not self.primary_mint or not self.primary_mint_symbol:
+            raise ValueError(
+                "primary_mint and primary_mint_symbol must be set in config.json "
+                "(the token you pay with; see config.json.sample)"
+            )
         # Token-set shape errors raise so a malformed hot-reload keeps the
         # previous configuration (reload_config is wrapped in maybe_reload_config).
-        if not self.secondary_mints or not self.secondary_mint_symbols:
-            raise ValueError("secondary_mints and secondary_mint_symbols must not be empty")
+        # An empty token set is valid: the bot then stays flat.
+        if not isinstance(self.secondary_mints, list) or not isinstance(
+            self.secondary_mint_symbols, list
+        ):
+            raise ValueError("secondary_mints and secondary_mint_symbols must be lists")  # noqa: TRY004 - reload rolls back on ValueError
         if len(self.secondary_mints) != len(self.secondary_mint_symbols):
             raise ValueError(
                 "secondary_mints and secondary_mint_symbols must have equal length"
@@ -257,6 +330,25 @@ class Config:
         if not self.jup_api:
             log_general.error("Jupiter API endpoint is not set in config.json.")
 
+    def mint_for_symbol(self, symbol: str) -> str | None:
+        """Mint address for a configured symbol: traded tokens, primary, then token_mints."""
+        if symbol in self.secondary_mint_symbols:
+            return self.secondary_mints[self.secondary_mint_symbols.index(symbol)]
+        if symbol == self.primary_mint_symbol:
+            return self.primary_mint
+        return self.token_mints.get(symbol)
+
+    def symbol_for_mint(self, mint: str) -> str | None:
+        """Configured symbol for a mint, or None when no setting names it."""
+        if mint in self.secondary_mints:
+            return self.secondary_mint_symbols[self.secondary_mints.index(mint)]
+        if mint == self.primary_mint:
+            return self.primary_mint_symbol
+        for symbol, known in self.token_mints.items():
+            if known == mint:
+                return symbol
+        return None
+
     def decimals(self, mint_address: str) -> int:
         """Return the smallest-unit multiplier for a mint, cached.
 
@@ -293,10 +385,12 @@ class Config:
         return self.keypair.pubkey()
 
     @property
-    def client(self) -> AsyncClient:
-        """Cached RPC client to avoid creating new connections."""
+    def client(self) -> Any:
+        """Cached RPC client; every call goes through the shared CU budget."""
         if self._client is None:
-            self._client = AsyncClient(self.rpc_https)
+            from sol_trade.rpc import BudgetedClient
+
+            self._client = BudgetedClient(self.rpc_https)
         return self._client
 
 

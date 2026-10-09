@@ -21,14 +21,17 @@ def main() -> None:
     setup_file_logging()  # before config(), so its warnings reach the log files
 
     try:
-        config().keypair  # noqa: B018 - raises ValueError on a missing/invalid key
-        problem = "" if config().secondary_mints else "no secondary_mints"
+        if not args.dry_run:
+            config().keypair  # noqa: B018 - raises ValueError on a missing/invalid key
+        else:
+            config()  # paper trading needs the config but no wallet key
+        problem = ""
     except (OSError, ValueError) as e:
         problem = str(e)
     if problem:
         print(
-            "Configuration incomplete: set SOLTRADE_PRIVATE_KEY in .env and "
-            f"secondary_mints in config.json. See the README. ({problem})",
+            "Configuration incomplete: set SOLTRADE_PRIVATE_KEY in .env (not needed "
+            f"with --dry-run) and the primary token in config.json. See the README. ({problem})",
             file=sys.stderr,
         )
         sys.exit(1)

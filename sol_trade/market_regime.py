@@ -1,4 +1,4 @@
-"""Market regime detector — determines Solana market direction via SOL/USDC trend."""
+"""Market regime detector — reads market direction from the daily trend of ``market_regime_pair``."""
 
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -38,9 +38,12 @@ def _should_refresh() -> bool:
         return True
 
 
-def _fetch_sol_usdc_daily() -> list[dict]:
-    """Fetch SOL/USDC daily candlestick data."""
-    return data_source.fetch_candles("SOL", "USDC", "1d", 30)
+def _fetch_regime_daily() -> list[dict]:
+    """Fetch daily candles for the configured ``market_regime_pair`` ("BASE/QUOTE")."""
+    base, _, quote = config().market_regime_pair.partition("/")
+    if not base or not quote:
+        raise ValueError("market_regime_pair must look like BASE/QUOTE")
+    return data_source.fetch_candles(base, quote, "1d", 30)
 
 
 def update_regime() -> None:
@@ -49,11 +52,16 @@ def update_regime() -> None:
     if not cfg.market_regime_enabled:
         return
 
+    if not cfg.market_regime_pair:
+        log_general.warning("Market regime: market_regime_pair is not set; staying NEUTRAL")
+        _save_regime("NEUTRAL", 1.0)
+        return
+
     if not _should_refresh():
         return
 
     try:
-        candles = _fetch_sol_usdc_daily()
+        candles = _fetch_regime_daily()
         if not candles:
             log_general.warning("Market regime: no daily data received")
             _save_regime("NEUTRAL", 1.0)

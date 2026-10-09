@@ -4,13 +4,13 @@ import time
 from solana.rpc.core import TokenAccountOpts
 from solders.pubkey import Pubkey
 
+from sol_trade import rpc
 from sol_trade.config import config
 from sol_trade.utils import handle_rate_limiting, run_async
 
 _SIGNATURE_FEE_LAMPORTS = 5000
 _TOKEN_ACCOUNT_SIZE = 165
 _SOL_RESERVE_FALLBACK = 0.02
-_SOL_RESERVE_TTL_SECONDS = 60
 _sol_reserve_cache: tuple[float, float] | None = None
 
 # SPL token program (TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA).
@@ -58,7 +58,8 @@ def minimum_sol_needed() -> float:
     """
     global _sol_reserve_cache
     now = time.time()
-    if _sol_reserve_cache is not None and now - _sol_reserve_cache[1] < _SOL_RESERVE_TTL_SECONDS:
+    ttl = float(config().rpc.get("sol_reserve_ttl_seconds", 3600))
+    if _sol_reserve_cache is not None and now - _sol_reserve_cache[1] < ttl:
         return _sol_reserve_cache[0]
 
     try:
@@ -105,7 +106,13 @@ def find_balance(token_mint: str) -> float:
     """Return the spendable token balance of the wallet.
 
     SOL keeps a 0.02 SOL fee reserve; zero is returned below that floor.
+    Balance reads feed swaps, so they run even past the daily RPC budget.
     """
+    with rpc.essential():
+        return _find_balance(token_mint)
+
+
+def _find_balance(token_mint: str) -> float:
     if token_mint == config().sol_mint:
         balance_response = run_async(
             config().client.get_balance(config().public_address)

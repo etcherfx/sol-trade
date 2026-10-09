@@ -16,7 +16,7 @@ from sol_trade import config as config_module
 
 _REPO_CWD = os.getcwd()
 _SANDBOX = tempfile.mkdtemp(prefix="sol-trade-tests-")
-for _var in ("SOLTRADE_PRIVATE_KEY", "SOLTRADE_JUPITER_API_KEY"):
+for _var in [name for name in os.environ if name.startswith("SOLTRADE_")]:
     os.environ.pop(_var, None)
 
 _TEST_CONFIG = {

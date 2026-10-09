@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import os
 import threading
@@ -101,3 +102,17 @@ def save_json_data(path: str, data: Any) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         json.dump(data, f, indent=2)
+
+
+def write_json_atomic(path: str, data: Any) -> None:
+    """Write JSON through a temp file and an atomic rename (raises OSError)."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        raise

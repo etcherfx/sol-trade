@@ -20,7 +20,7 @@ from sol_trade.wallet import token_account_ui_amounts
 def _get_wallet_token_balance(wallet: str, token_mint: str) -> float:
     """Query token balance for a single wallet and token via Solana RPC."""
     cfg = config()
-    # Handle native SOL
+    # Native SOL lives in the wallet's lamport balance, not a token account
     if token_mint == cfg.sol_mint:
         response = run_async(cfg.client.get_balance(Pubkey.from_string(wallet)))
         balance = response.value / (10**9)
@@ -66,15 +66,8 @@ def update_whale_data() -> None:
     timestamp = datetime.now(UTC).isoformat()
 
     for token_symbol, wallets in whale_wallets.items():
-        # Resolve token mint from config
-        token_mint = None
-        if token_symbol in cfg.secondary_mint_symbols:
-            idx = cfg.secondary_mint_symbols.index(token_symbol)
-            token_mint = cfg.secondary_mints[idx]
-        elif token_symbol == cfg.primary_mint_symbol:
-            token_mint = cfg.primary_mint
-        elif token_symbol == "SOL":
-            token_mint = cfg.sol_mint
+        # Resolve the mint from config (traded tokens, primary, token_mints)
+        token_mint = cfg.mint_for_symbol(token_symbol)
 
         if token_mint is None:
             log_general.warning(

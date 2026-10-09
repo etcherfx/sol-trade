@@ -93,8 +93,8 @@ def test_live_buy_chain_mocked_swap(tmp_path, monkeypatch):
         return {"out_amount": 1.0, "sent_amount": 100.0}
 
     monkeypatch.setattr(trading, "perform_swap", fake_swap)
-    trading._balance_cache._cache[config().primary_mint] = 100.0
-    trading._balance_cache._cache[config().secondary_mints[0]] = 0.0
+    trading._balance_cache.set(config().primary_mint, 100.0)
+    trading._balance_cache.set(config().secondary_mints[0], 0.0)
     df = _trading_df(entry=1)
     csv_path = tmp_path / "sol.csv"
 
@@ -124,8 +124,8 @@ def test_live_sell_chain_mocked_swap(tmp_path, monkeypatch):
         return {"out_amount": 150.0, "sent_amount": 1.0}  # 1 SOL -> 150 USDC
 
     monkeypatch.setattr(trading, "perform_swap", fake_swap)
-    trading._balance_cache._cache[config().secondary_mints[0]] = 1.0
-    trading._balance_cache._cache[config().primary_mint] = 0.0
+    trading._balance_cache.set(config().secondary_mints[0], 1.0)
+    trading._balance_cache.set(config().primary_mint, 0.0)
     df = _trading_df(exit_=1, size=1.0)
     csv_path = tmp_path / "sol.csv"
 
@@ -473,3 +473,72 @@ def test_full_close_clears_position_and_columns(tmp_path, monkeypatch):
     for col in ("position_size", "entry_price", "stoploss", "takeprofit"):
         assert col not in saved.columns
     _reset_dry_run()
+
+
+def test_dust_position_is_written_off(tmp_path, monkeypatch):
+    path = tmp_path / "SOL_data.csv"
+    pd.DataFrame(
+        {"close": [100.0], "position": [True], "position_size": [1.4e-8], "entry_price": [150.0]}
+    ).to_csv(path, index=False)
+    df = pd.read_csv(path)
+
+    out = trading._write_off_dust(df, "SOL", 150.0, str(path))
+
+    assert bool(out["position"].iat[-1]) is False
+    assert bool(pd.read_csv(path)["position"].iat[-1]) is False
+
+
+def test_real_position_is_not_dust(tmp_path):
+    path = tmp_path / "SOL_data.csv"
+    df = pd.DataFrame({"close": [100.0], "position": [True], "position_size": [0.5]})
+
+    out = trading._write_off_dust(df, "SOL", 150.0, str(path))
+
+    assert bool(out["position"].iat[-1]) is True
+    assert not path.exists()  # nothing written
+
+
+def test_dust_does_not_block_token_removal(tmp_path, monkeypatch):
+    cfg = config()
+    prev = {
+        "secondary_mints": ["M1"],
+        "secondary_mint_symbols": ["SOL"],
+        "secondary_weights": [],
+    }
+    dust_csv = tmp_path / "SOL_data.csv"
+    dust_csv.write_text("close,position,position_size\n1.0,True,1.4e-8\n")
+    monkeypatch.setattr(trading, "read_dataframe_from_csv", lambda p: pd.read_csv(str(dust_csv)))
+    monkeypatch.setitem(trading._last_price_map, "M1", 150.0)
+    monkeypatch.setattr(cfg, "secondary_mints", ["M2"])
+    monkeypatch.setattr(cfg, "secondary_mint_symbols", ["JUP"])
+
+    trading._enforce_token_change_guard(prev)
+
+    assert cfg.secondary_mints == ["M2"]  # removal stands: the position is dust
+
+
+def test_dry_run_ledger_is_virtual(monkeypatch):
+    def _no_rpc(*args, **kwargs):
+        raise AssertionError("dry run must not read the wallet")
+
+    monkeypatch.setattr(trading, "find_balance", _no_rpc)
+    cache = trading.BalanceCache()
+    cache.set_paper_mode(True)
+
+    assert cache.get(config().primary_mint) == pytest.approx(config().risk["max_live_capital"])
+    assert cache.get(config().secondary_mints[0]) == 0.0
+
+
+def test_live_balance_reads_expire(monkeypatch):
+    reads: list[str] = []
+    monkeypatch.setattr(trading, "find_balance", lambda mint: reads.append(mint) or 1.0)
+    clock = {"now": 0.0}
+    cache = trading.BalanceCache(clock=lambda: clock["now"])
+    ttl = config().rpc["balance_refresh_seconds"]
+
+    cache.get("M")
+    cache.get("M")
+    clock["now"] = ttl + 1
+    cache.get("M")
+
+    assert reads == ["M", "M"]  # one read, reused, then refreshed after the TTL

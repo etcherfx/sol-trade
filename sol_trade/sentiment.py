@@ -56,7 +56,7 @@ def _compute_token_sentiment(token_symbol: str) -> float:
 
     Returns a score from -1.0 to +1.0.
     """
-    subreddits = ["SolanaTopGainers", "cryptocurrency"]
+    subreddits = list(config().sentiment.get("subreddits") or [])
     total_pos = 0
     total_neg = 0
 

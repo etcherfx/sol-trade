@@ -213,3 +213,93 @@ def test_reload_survives_malformed_json(tmp_path, monkeypatch):
     finally:
         c.__dict__.clear()
         c.__dict__.update(snapshot)
+
+
+def _write(tmp_path, data):
+    import json
+
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(data))
+    return str(path)
+
+
+_PRIMARY = {"primary_mint": "PRIMARY_MINT", "primary_mint_symbol": "QUOTE"}
+
+
+def test_empty_token_set_is_valid(tmp_path):
+    import os
+
+    from sol_trade.config import Config
+
+    c = Config(config_path=_write(tmp_path, _PRIMARY), dotenv_path=os.devnull)
+    assert c.secondary_mints == []
+    assert c.secondary_mint_symbols == []
+
+
+def test_missing_primary_mint_is_a_clear_error(tmp_path):
+    import os
+
+    from sol_trade.config import Config
+
+    with pytest.raises(ValueError, match="primary_mint"):
+        Config(config_path=_write(tmp_path, {}), dotenv_path=os.devnull)
+
+
+def test_no_market_defaults_in_code(tmp_path):
+    import os
+
+    from sol_trade.config import Config
+
+    c = Config(config_path=_write(tmp_path, _PRIMARY), dotenv_path=os.devnull)
+    assert c.secondary_mints == []
+    assert c.market_regime_pair == ""
+    assert c.sentiment["subreddits"] == []
+    assert c.whale_tracking_enabled is False
+    assert c.confluence_enabled is False
+
+
+def test_sections_deep_merge_with_defaults(tmp_path):
+    import os
+
+    from sol_trade.config import SECTION_DEFAULTS, Config
+
+    path = _write(tmp_path, {**_PRIMARY, "risk": {"max_trade_size": 25}})
+    c = Config(config_path=path, dotenv_path=os.devnull)
+    assert c.risk["max_trade_size"] == 25
+    assert c.risk["max_live_capital"] == SECTION_DEFAULTS["risk"]["max_live_capital"]
+    assert c.rpc["max_cu_per_second"] == SECTION_DEFAULTS["rpc"]["max_cu_per_second"]
+
+
+def test_config_path_env_override(tmp_path, monkeypatch):
+    import os
+
+    from sol_trade.config import Config
+
+    path = _write(tmp_path, {**_PRIMARY, "strategy": "from_env"})
+    monkeypatch.setenv("SOLTRADE_CONFIG_PATH", path)
+    c = Config(dotenv_path=os.devnull)
+    assert c.path == path
+    assert c.strategy == "from_env"
+
+
+def test_symbol_and_mint_lookups(tmp_path):
+    import os
+
+    from sol_trade.config import Config
+
+    path = _write(
+        tmp_path,
+        {
+            **_PRIMARY,
+            "secondary_mints": ["MINT_A"],
+            "secondary_mint_symbols": ["AAA"],
+            "token_mints": {"BBB": "MINT_B"},
+        },
+    )
+    c = Config(config_path=path, dotenv_path=os.devnull)
+    assert c.mint_for_symbol("AAA") == "MINT_A"
+    assert c.mint_for_symbol("BBB") == "MINT_B"
+    assert c.mint_for_symbol("QUOTE") == "PRIMARY_MINT"
+    assert c.mint_for_symbol("ZZZ") is None
+    assert c.symbol_for_mint("MINT_B") == "BBB"
+    assert c.symbol_for_mint("UNKNOWN") is None

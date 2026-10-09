@@ -30,16 +30,24 @@ _http_session = httpx.Client(timeout=10.0)
 
 
 class BalanceCache:
-    """Lazy balance fetcher; in dry-run mode it keeps a simulated paper ledger."""
+    """Lazy balance fetcher; in dry-run mode it keeps a simulated paper ledger.
 
-    def __init__(self) -> None:
-        self._cache: dict[str, float] = {}
+    Live reads are reused for ``rpc.balance_refresh_seconds`` (and dropped
+    after every trade). The paper ledger never touches the wallet: it starts
+    with ``risk.max_live_capital`` of the primary token and nothing else.
+    """
+
+    def __init__(self, clock: Any = time.time) -> None:
+        self._cache: dict[str, tuple[float, float]] = {}
         self._paper_mode = False
         self._paper: dict[str, float] = {}
+        self._clock = clock
 
     def set_paper_mode(self, enabled: bool) -> None:
         self._paper_mode = enabled
         self._paper = {}
+        if enabled:
+            self._paper[config().primary_mint] = float(config().risk["max_live_capital"])
 
     @property
     def paper_mode(self) -> bool:
@@ -47,22 +55,22 @@ class BalanceCache:
 
     def get(self, mint: str) -> float:
         if self._paper_mode:
-            if mint not in self._paper:
-                # Seed the paper ledger from the real wallet once.
-                self._paper[mint] = _safe_balance(mint)
-            return self._paper[mint]
-        if mint not in self._cache:
+            return self._paper.get(mint, 0.0)
+        ttl = float(config().rpc.get("balance_refresh_seconds", 900))
+        cached = self._cache.get(mint)
+        if cached is None or self._clock() - cached[1] >= ttl:
             # find_balance may return None on persistent rate limiting; treat
             # as zero so downstream arithmetic never sees None.
-            self._cache[mint] = _safe_balance(mint)
-        return self._cache[mint]
+            cached = (_safe_balance(mint), self._clock())
+            self._cache[mint] = cached
+        return cached[0]
 
     def set(self, mint: str, value: float) -> None:
         """Record a simulated balance change (dry-run fills)."""
         if self._paper_mode:
             self._paper[mint] = value
         else:
-            self._cache[mint] = value
+            self._cache[mint] = (value, self._clock())
 
     def invalidate(self, mint: str) -> None:
         if not self._paper_mode:
@@ -114,11 +122,20 @@ def _token_set_snapshot() -> dict[str, Any]:
     return {attr: getattr(cfg, attr) for attr in _TOKEN_SET_ATTRS}
 
 
-def _has_open_position(token_symbol: str) -> bool:
-    """True when the persisted position CSV for a token has an open position."""
+def _is_dust(size: float, price: float) -> bool:
+    """A position worth less than ``risk.dust_threshold_usd`` (needs a known price)."""
+    threshold = float(config().risk.get("dust_threshold_usd", 0) or 0)
+    return price > 0 and size * price < threshold
+
+
+def _has_open_position(token_symbol: str, mint: str | None = None) -> bool:
+    """True when the persisted position CSV for a token has a non-dust open position."""
     try:
         df = read_dataframe_from_csv(f"data/{token_symbol}_data.csv")
-        return len(df) > 0 and bool(df["position"].iat[-1])
+        if len(df) == 0 or not bool(df["position"].iat[-1]):
+            return False
+        size = _as_float(df["position_size"].iat[-1]) if "position_size" in df.columns else 0.0
+        return not (mint and _is_dust(size, _last_price_map.get(mint, 0.0)))
     except (FileNotFoundError, KeyError, IndexError):
         return False
 
@@ -132,8 +149,8 @@ def _enforce_token_change_guard(prev: dict[str, Any]) -> None:
     cfg = config()
     removed = [
         symbol
-        for symbol in prev["secondary_mint_symbols"]
-        if symbol not in cfg.secondary_mint_symbols and _has_open_position(symbol)
+        for mint, symbol in zip(prev["secondary_mints"], prev["secondary_mint_symbols"])
+        if symbol not in cfg.secondary_mint_symbols and _has_open_position(symbol, mint)
     ]
     if removed:
         log_general.error(
@@ -240,10 +257,9 @@ def _capture_baseline() -> None:
     global initial_primary_price, initial_secondary_prices
 
     cfg = config()
-    initial_primary_balance = _safe_balance(cfg.primary_mint)
-    initial_secondary_balances = [
-        _safe_balance(mint) for mint in cfg.secondary_mints
-    ]
+    read = _balance_cache.get if _balance_cache.paper_mode else _safe_balance
+    initial_primary_balance = read(cfg.primary_mint)
+    initial_secondary_balances = [read(mint) for mint in cfg.secondary_mints]
 
     prices = fetch_prices([cfg.primary_mint, *cfg.secondary_mints])
     for mint, price in prices.items():
@@ -304,6 +320,56 @@ def _candles_to_frame(candles: list[dict]) -> pd.DataFrame:
     return df[_CANDLE_COLUMNS]
 
 
+def _write_off_dust(
+    df: pd.DataFrame, symbol: str, price: float, data_file_path: str
+) -> pd.DataFrame:
+    """Close a carried position worth less than the dust threshold, without a swap."""
+    size = _as_float(df["position_size"].iat[-1]) if "position_size" in df.columns else 0.0
+    if not _is_dust(size, price):
+        return df
+    log_transaction.info(
+        f"dust write-off: {symbol} position of {size:g} (${size * price:.4f}) "
+        "closed without a swap"
+    )
+    df = _close_position_bookkeeping(df, size)
+    save_dataframe_to_csv(df, data_file_path)
+    return df
+
+
+_last_holdings_refresh = 0.0
+_full_holdings: list[Holding] = []
+_full_holdings_total = 0.0
+
+
+def _refresh_holdings(price_map: dict[str, float]) -> None:
+    """Refresh the display-only wallet view every ``rpc.holdings_refresh_seconds``."""
+    global _last_holdings_refresh, _full_holdings, _full_holdings_total
+    cfg = config()
+    interval = float(cfg.rpc.get("holdings_refresh_seconds", 0) or 0)
+    if interval <= 0 or not cfg.private_key:
+        _full_holdings, _full_holdings_total = [], 0.0
+        return
+    if time.time() - _last_holdings_refresh < interval:
+        return
+    _last_holdings_refresh = time.time()
+    try:
+        raw_holdings = get_all_token_holdings()
+    except Exception:  # noqa: BLE001 - holdings are display-only; keep the previous view
+        log_general.debug("failed to fetch full account holdings")
+        return
+    holdings: list[Holding] = []
+    total = 0.0
+    for mint, balance in raw_holdings.items():
+        price = price_map.get(mint) or _last_price_map.get(mint)
+        value = balance * price if price else None
+        if value:
+            total += value
+        holdings.append(
+            Holding(mint=mint, symbol=cfg.symbol_for_mint(mint), balance=balance, value=value)
+        )
+    _full_holdings, _full_holdings_total = holdings, total
+
+
 def perform_analysis(state: UIState) -> None:
     cfg = config()
     data_frames: list[pd.DataFrame] = []
@@ -341,6 +407,11 @@ def perform_analysis(state: UIState) -> None:
 
             try:
                 existing_df = read_dataframe_from_csv(data_file_path)
+                if len(existing_df) > 0 and existing_df["position"].iat[-1]:
+                    existing_df = _write_off_dust(
+                        existing_df, secondary_mint_symbol,
+                        price_map.get(secondary_mint, 0.0), data_file_path,
+                    )
                 if len(existing_df) > 0 and existing_df["position"].iat[-1]:
                     columns_to_merge = [
                         "position",
@@ -454,36 +525,17 @@ def perform_analysis(state: UIState) -> None:
             )
         )
     # Full-account view: every token the wallet holds, valued where a price exists.
-    full_holdings: list[Holding] = []
-    total_account_value = float(current_total_value or 0.0)
-    try:
-        raw_holdings = get_all_token_holdings()
-        mint_to_symbol = {
-            cfg.primary_mint: cfg.primary_mint_symbol,
-            config().sol_mint: "SOL",
-            **dict(zip(cfg.secondary_mints, cfg.secondary_mint_symbols)),
-        }
-        known_prices = {mint: price for mint, price in price_map.items() if price > 0}
-        total = 0.0
-        for mint, balance in raw_holdings.items():
-            price = known_prices.get(mint)
-            value = balance * price if price else None
-            if value:
-                total += value
-            full_holdings.append(
-                Holding(mint=mint, symbol=mint_to_symbol.get(mint), balance=balance, value=value)
-            )
-        if total > 0:
-            total_account_value = total
-    except Exception:  # noqa: BLE001 - holdings are display-only; keep the previous view
-        log_general.debug("failed to fetch full account holdings")
+    _refresh_holdings(price_map)
+    full_holdings = list(_full_holdings)
+    total_account_value = _full_holdings_total or float(current_total_value or 0.0)
+    reserved_fees = 0.0 if _dry_run else minimum_sol_needed()
 
     state.update(
         lambda s: (
             setattr(s, "primary_balance", float(current_primary_balance or 0.0)),
             setattr(s, "portfolio_value", float(current_total_value or 0.0)),
             setattr(s, "total_profit", float(total_profit or 0.0)),
-            setattr(s, "reserved_fees", minimum_sol_needed()),
+            setattr(s, "reserved_fees", reserved_fees),
             setattr(s, "tokens", tokens),
             setattr(s, "full_holdings", full_holdings),
             setattr(s, "total_account_value", total_account_value),
