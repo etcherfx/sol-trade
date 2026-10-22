@@ -316,3 +316,58 @@ def test_token_exchanges_take_an_exchange_and_quote(tmp_path):
     for bad in ({"exchange": ""}, {"exchange": "okx", "pair": "JUP/USDT"}, ["okx"], {"quote": 1}):
         with pytest.raises(ValueError, match="token_exchanges.JUP"):
             Config(config_path=_write(tmp_path, {**_PRIMARY, "token_exchanges": {"JUP": bad}}), dotenv_path=os.devnull)
+
+
+_SECRET_FIELDS = {
+    "private_key": ("SOLTRADE_PRIVATE_KEY", "file-private-key-value"),
+    "jupiter_api_key": ("SOLTRADE_JUPITER_API_KEY", "file-jupiter-key-value"),
+}
+
+
+def _deprecations(caplog):
+    return [r.getMessage() for r in caplog.records if "deprecated" in r.getMessage()]
+
+
+@pytest.mark.parametrize("field", sorted(_SECRET_FIELDS))
+def test_secret_in_config_json_warns_without_the_value(tmp_path, caplog, field):
+    import os
+
+    from sol_trade.config import Config
+
+    env_var, value = _SECRET_FIELDS[field]
+    with caplog.at_level("WARNING", logger="general_logger"):
+        c = Config(config_path=_write(tmp_path, {**_PRIMARY, field: value}), dotenv_path=os.devnull)
+    assert getattr(c, field) == value  # still accepted
+    messages = _deprecations(caplog)
+    assert len(messages) == 1
+    assert field in messages[0] and env_var in messages[0]
+    assert value not in caplog.text
+
+
+def test_env_wins_over_deprecated_config_json_secrets(tmp_path, monkeypatch, caplog):
+    import os
+
+    from sol_trade.config import Config
+
+    data = {**_PRIMARY, **{field: value for field, (_, value) in _SECRET_FIELDS.items()}}
+    for env_var, _ in _SECRET_FIELDS.values():
+        monkeypatch.setenv(env_var, f"env-{env_var}")
+    with caplog.at_level("WARNING", logger="general_logger"):
+        c = Config(config_path=_write(tmp_path, data), dotenv_path=os.devnull)
+    for field, (env_var, value) in _SECRET_FIELDS.items():
+        assert getattr(c, field) == f"env-{env_var}"
+        assert value not in caplog.text
+        assert f"env-{env_var}" not in caplog.text
+    assert len(_deprecations(caplog)) == 2  # one per field
+
+
+def test_no_deprecation_warning_without_config_json_secrets(tmp_path, monkeypatch, caplog):
+    import os
+
+    from sol_trade.config import Config
+
+    monkeypatch.setenv("SOLTRADE_PRIVATE_KEY", "env-key")
+    with caplog.at_level("WARNING", logger="general_logger"):
+        c = Config(config_path=_write(tmp_path, _PRIMARY), dotenv_path=os.devnull)
+    assert c.private_key == "env-key"
+    assert _deprecations(caplog) == []

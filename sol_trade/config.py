@@ -306,12 +306,18 @@ class Config:
     def load_config(self) -> None:
         self._apply_config_file()
 
-        # Credentials: environment variables (.env) take precedence over config.json
+        # Credentials: environment variables (.env) take precedence over config.json,
+        # where they are deprecated. The warning names the field, never its value.
         env_overrides = {
             "private_key": "SOLTRADE_PRIVATE_KEY",
             "jupiter_api_key": "SOLTRADE_JUPITER_API_KEY",
         }
         for attr, env_var in env_overrides.items():
+            if getattr(self, attr):
+                log_general.warning(
+                    f"{attr} in config.json is deprecated and will be removed in a future "
+                    f"release; set {env_var} in .env instead and delete it from config.json."
+                )
             env_value = os.getenv(env_var)
             if env_value:
                 setattr(self, attr, env_value)
@@ -408,7 +414,7 @@ class Config:
             )
 
         if not self.private_key or self.private_key == "":
-            log_general.warning("Private key is not set in .env or config.json. Bot cannot trade.")
+            log_general.warning("Private key is not set: set SOLTRADE_PRIVATE_KEY in .env. Bot cannot trade.")
 
         if not self.jupiter_api_key or self.jupiter_api_key == "":
             log_general.warning("Jupiter API key is not set. Optional unless required by your api.jup.ag endpoint.")

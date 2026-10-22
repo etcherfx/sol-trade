@@ -126,7 +126,7 @@ Three tokens without whale tracking come to about 8,000 CU a day; swaps add a fe
 
 ## Configuration
 
-SolTrade reads its configuration from `config.json` and its credentials from the `.env` file, both in the project root. Copy `config.json.sample` to `config.json` and `.env.example` to `.env` before the first run. Environment variables take precedence over `config.json`, and `SOLTRADE_CONFIG_PATH` and `SOLTRADE_DOTENV_PATH` point the bot and the CLI at files elsewhere.
+SolTrade reads its configuration from `config.json` and its credentials from the `.env` file, both in the project root. Copy `config.json.sample` to `config.json` and `.env.example` to `.env` before the first run. Secrets belong in `.env`: the `private_key` and `jupiter_api_key` fields in `config.json` are deprecated, still work for now with a warning at startup, and lose to `SOLTRADE_PRIVATE_KEY` and `SOLTRADE_JUPITER_API_KEY` when both are set. `SOLTRADE_CONFIG_PATH` and `SOLTRADE_DOTENV_PATH` point the bot and the CLI at files elsewhere.
 
 Config is **hot-reloaded**: edits to `config.json` are picked up automatically on the next trading cycle (≤ 1 minute) — strategy, feature toggles, slippage, whale wallets, polling intervals, and the traded tokens all apply live. Structural settings (the primary token you pay with, RPC, exchange) and `.env` credentials still require a restart. Removing a token that currently has an open position is refused until that position is closed.
 
