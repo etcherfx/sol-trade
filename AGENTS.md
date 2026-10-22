@@ -48,7 +48,8 @@ uv run pytest          # offline, about 20 seconds
 
 ## Constraints and conventions
 
-- **Secrets:** `config.json`, `.env`, `data/` and `logs/` are git-ignored. Never commit, print or log a private key, and never read the real `config.json`/`.env` in tests.
+- **Language:** American English in code, comments, docs and user-facing text.
+- **Secrets:** they come from environment variables and `.env`; never add a secret field to `config.json`. `config.json`, `.env`, `data/` and `logs/` are git-ignored. Never read, print, log or commit `.env`, the real `config.json` or a private key, in tests or otherwise, and add every new variable to `.env.example` in the same change.
 - **Config access:** read settings through `config()` at call time, not at import, so hot-reload applies. Keys in `_STRUCTURAL_KEYS` (primary mint, RPC, exchange, credentials) are pinned on reload; the token set is hot-reloadable.
 - **Token changes:** removing a token with an open position is rolled back by `_enforce_token_change_guard`. A token-set change recaptures the P&L baseline. Keep both when touching the loop.
 - **One engine:** live, dry run, paper books and backtests all advance `engine.Book` with the same three steps. Change decision logic only in `engine.py`; `tests/test_parity.py` and the paper-replay test in `tests/test_promotion.py` must stay exact.

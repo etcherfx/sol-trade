@@ -6,7 +6,7 @@
 # --- project settings ---------------------------------------------------------
 $Project = 'SolTrade'
 # Sample file = file it's copied to on the first run.
-$Configs = [ordered]@{ 'config.json.sample' = 'config.json'; '.env.sample' = '.env' }
+$Configs = [ordered]@{ 'config.json.sample' = 'config.json'; '.env.example' = '.env' }
 # Shown after the first run creates the config files.
 $FirstRunHint = "Set SOLTRADE_PRIVATE_KEY in .env and the tokens to trade (secondary_mints) in config.json, then run this again. See the README's Getting started."
 $Entry = 'main.py'

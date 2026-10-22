@@ -13,3 +13,4 @@ config
 strategies
 config.json
 .env
+.env.*

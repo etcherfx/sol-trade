@@ -16,6 +16,8 @@ wheels/
 # SolTrade files
 config.json
 .env
+.env.*
+!.env.example
 data/
 logs/
 

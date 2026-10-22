@@ -29,7 +29,7 @@ body:
     id: version
     attributes:
       label: SolTrade version or commit
-      placeholder: v2.0.0 or a commit hash
+      placeholder: v3.0.0 or a commit hash
     validations:
       required: true
   - type: dropdown

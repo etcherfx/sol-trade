@@ -20,7 +20,7 @@ The pull request template asks for the why, what you verified and any screenshot
 
 - Keep each pull request to one change.
 - Add or update tests for trading, strategy, config or wallet logic.
-- New strategies go in `strategies/{name}_strategy.py` and follow the README's [Custom strategies](README.md#custom-strategies) rules.
+- Strategies are JSON files that follow the README's [Custom strategies](README.md#custom-strategies) rules. `strategies/` is git-ignored, so a strategy meant to ship with SolTrade goes in `sol_trade/builtin_strategies/{name}.json`.
 
 Commits follow [Conventional Commits](https://www.conventionalcommits.org/) (`type(scope): description`) and carry a [DCO](https://developercertificate.org/) sign-off, added with `git commit -s`.
 

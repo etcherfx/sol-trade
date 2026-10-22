@@ -6,7 +6,7 @@
 # --- project settings ---------------------------------------------------------
 project="SolTrade"
 # Space-separated SAMPLE:TARGET pairs, copied on the first run.
-configs="config.json.sample:config.json .env.sample:.env"
+configs="config.json.sample:config.json .env.example:.env"
 # Shown after the first run creates the config files.
 first_run_hint="Set SOLTRADE_PRIVATE_KEY in .env and the tokens to trade (secondary_mints) in config.json, then run this again. See the README's Getting started."
 entry="main.py"

@@ -10,7 +10,7 @@
 
 **A Solana trading bot that runs your strategies and swaps through Jupiter.**
 
-[Get started](#getting-started) · [Configuration](#configuration) · [Multi-token portfolios](#multi-token-portfolios) · [Custom strategies](#custom-strategies) · [Research pipeline](#research-pipeline) · [Agent CLI](#agent-cli) · [FAQ](#faq)
+[Get started](#getting-started) · [Configuration](#configuration) · [Custom strategies](#custom-strategies) · [Research pipeline](#research-pipeline) · [Agent CLI](#agent-cli)
 
 </div>
 
@@ -66,24 +66,13 @@ With [uv](https://docs.astral.sh/uv/) installed:
 git clone https://github.com/etcherfx/sol-trade.git
 cd sol-trade
 cp config.json.sample config.json
-cp .env.sample .env
+cp .env.example .env
 uv run main.py --dry-run
 ```
 
 Fill in `config.json` and `.env` as in step 3, and drop `--dry-run` to trade for real.
 
 ## Usage
-
-### How it works
-
-SolTrade runs a continuous loop:
-
-1. **Fetch** — the bot updates each token's candles at its strategy's timeframe and keeps them in a local store.
-2. **Analyze** — when a bar closes, the token's strategy computes its indicators and produces `entry` / `exit` signals.
-3. **Act** — entries and signal exits fill at the next bar's open. Stop-losses and trailing stops are watched within the bar against levels set at the previous close; take-profits trigger on a close and fill at the next open. Every live trade is routed through the Jupiter Swap API.
-4. **Protect** — positions live in `data/research.db`, so a restart resumes where it left off and replays any bars it missed.
-
-The [backtester](#research-pipeline) runs the same engine on stored candles, so a backtest and the live loop make the same decisions from the same bars. Optional layers — whale tracking, a confluence sizing filter, market regime detection, and a sentiment circuit breaker — operate between the signal and the trade for tokens you configure by hand. See [Advanced features](#advanced-features) for details.
 
 ### Terminal UI
 
@@ -137,18 +126,18 @@ Three tokens without whale tracking come to about 8,000 CU a day; swaps add a fe
 
 ## Configuration
 
-SolTrade reads its configuration from `config.json` and its credentials from the `.env` file, both in the project root. Copy `config.json.sample` to `config.json` and `.env.sample` to `.env` before the first run. Environment variables take precedence over `config.json`, and `SOLTRADE_CONFIG_PATH` and `SOLTRADE_DOTENV_PATH` point the bot and the CLI at files elsewhere.
+SolTrade reads its configuration from `config.json` and its credentials from the `.env` file, both in the project root. Copy `config.json.sample` to `config.json` and `.env.example` to `.env` before the first run. Environment variables take precedence over `config.json`, and `SOLTRADE_CONFIG_PATH` and `SOLTRADE_DOTENV_PATH` point the bot and the CLI at files elsewhere.
 
 Config is **hot-reloaded**: edits to `config.json` are picked up automatically on the next trading cycle (≤ 1 minute) — strategy, feature toggles, slippage, whale wallets, polling intervals, and the traded tokens all apply live. Structural settings (the primary token you pay with, RPC, exchange) and `.env` credentials still require a restart. Removing a token that currently has an open position is refused until that position is closed.
 
 ### Credentials
 
-Secrets live in the git-ignored `.env` file:
+Secrets live in the git-ignored `.env` file; `.env.example` lists them:
 
-| Variable | Purpose |
-| --- | --- |
-| `SOLTRADE_PRIVATE_KEY` | Solana wallet private key (base58) |
-| `SOLTRADE_JUPITER_API_KEY` | Jupiter API key — optional, sent only if set |
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `SOLTRADE_PRIVATE_KEY` | To trade live | Solana wallet private key (base58) |
+| `SOLTRADE_JUPITER_API_KEY` | No | Jupiter API key — sent only if set |
 
 ### Core settings
 
@@ -221,6 +210,17 @@ Each section is an object in `config.json`; keys you leave out keep their defaul
 | `whale_data_path` | Where whale snapshots are stored | `data/whale_data.json` |
 | `regime_data_path` | Where market regime data is stored | `data/regime_data.json` |
 | `sentiment_data_path` | Where sentiment data is stored | `data/sentiment_data.json` |
+
+## How it works
+
+SolTrade runs a continuous loop:
+
+1. **Fetch** — the bot updates each token's candles at its strategy's timeframe and keeps them in a local store.
+2. **Analyze** — when a bar closes, the token's strategy computes its indicators and produces `entry` / `exit` signals.
+3. **Act** — entries and signal exits fill at the next bar's open. Stop-losses and trailing stops are watched within the bar against levels set at the previous close; take-profits trigger on a close and fill at the next open. Every live trade is routed through the Jupiter Swap API.
+4. **Protect** — positions live in `data/research.db`, so a restart resumes where it left off and replays any bars it missed.
+
+The [backtester](#research-pipeline) runs the same engine on stored candles, so a backtest and the live loop make the same decisions from the same bars. Optional layers — whale tracking, a confluence sizing filter, market regime detection, and a sentiment circuit breaker — operate between the signal and the trade for tokens you configure by hand. See [Advanced features](#advanced-features) for details.
 
 ## Multi-token portfolios
 
