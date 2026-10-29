@@ -14,7 +14,7 @@ uv run pytest          # offline, about 20 seconds
 
 - Tests are hermetic: `tests/conftest.py` installs a throwaway config and keypair, points the RPC at a dead local address, clears `SOLTRADE_*` variables and runs from a temporary directory. They never read `config.json` or `.env` and need no network or funds.
 - `ruff format` is not enforced; many files are not formatted with it, so don't reformat untouched code.
-- There is no CI for pushes or pull requests. Run both checks yourself before calling a change done. `.github/workflows/release.yml` runs them again on a version tag, before it publishes the release.
+- CI (`.github/workflows/ci.yml`) runs on every pull request to `main` and every push to `main`. Its `check` job runs the three commands above; its `image` job builds the Dockerfile, runs the container with `--dry-run` against a throwaway config without a key, and waits for Docker to report `healthy`. Both jobs are the merge gate: merging to `main` is the production deploy. Still run both checks yourself before calling a change done. `.github/workflows/release.yml` runs them again on a version tag, before it publishes the release.
 - Manual smoke test: `uv run main.py --dry-run` (paper trading against a virtual `risk.max_live_capital`; no key needed, but live exchange and Jupiter price access). Point it at a scratch config with `SOLTRADE_CONFIG_PATH`/`SOLTRADE_DOTENV_PATH` rather than the repo's own `config.json`.
 
 ## Code map
