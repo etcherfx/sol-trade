@@ -1,0 +1,105 @@
+# The merge gate: a push to main is the production deploy (the server rebuilds the bot from it),
+# so every pull request must pass lint, tests and a paper-mode health check of the image.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.2.0 # no moving major tag upstream
+
+      - name: Install
+        run: uv sync --locked
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Test
+        run: uv run pytest
+
+  # Builds the image as the server does and runs it as compose does, but only with --dry-run
+  # and a throwaway config without a key. Healthy means the trading loop wrote a fresh
+  # heartbeat; a cycle whose price or candle requests fail still writes one.
+  image:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: sol-trade:ci
+      CONTAINER: sol-trade-ci
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build
+        run: docker build -t "$IMAGE" .
+
+      - name: Write a throwaway config
+        shell: bash
+        run: |
+          root="$RUNNER_TEMP/soltrade"
+          mkdir -p "$root/config" "$root/strategies" "$root/data" "$root/logs"
+          # The shape tests/conftest.py uses, minus the key: paper trading needs none.
+          cat > "$root/config/config.json" <<'EOF'
+          {
+            "rpc_https": "http://127.0.0.1:9",
+            "primary_mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "primary_mint_symbol": "USDC",
+            "secondary_mints": [
+              "So11111111111111111111111111111111111111112",
+              "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"
+            ],
+            "secondary_mint_symbols": ["SOL", "JUP"],
+            "strategy": "default",
+            "sentiment": {"fear_greed_url": ""}
+          }
+          EOF
+          : > "$root/config/.env"
+          chmod -R a+rwX "$root"   # the container runs as 1000:1000, like compose's default
+
+      - name: Run in paper mode and wait for healthy
+        shell: bash
+        run: |
+          root="$RUNNER_TEMP/soltrade"
+          docker run -d --name "$CONTAINER" --user 1000:1000 \
+            -e SOLTRADE_CONFIG_PATH=/config/config.json \
+            -e SOLTRADE_DOTENV_PATH=/config/.env \
+            -v "$root/config:/config" \
+            -v "$root/strategies:/app/strategies" \
+            -v "$root/data:/app/data" \
+            -v "$root/logs:/app/logs" \
+            "$IMAGE" --dry-run
+          # The image's start period, plus one probe timeout for the probe that lands at its end.
+          start=$(docker inspect -f '{{json .Config.Healthcheck.StartPeriod}}' "$IMAGE")   # nanoseconds
+          timeout=$(docker inspect -f '{{json .Config.Healthcheck.Timeout}}' "$IMAGE")
+          deadline=$((SECONDS + (start + timeout) / 1000000000))
+          status=starting
+          while (( SECONDS < deadline )); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' "$CONTAINER")
+            [[ "$status" == healthy || "$(docker inspect -f '{{.State.Running}}' "$CONTAINER")" != true ]] && break
+            sleep 5
+          done
+          echo "health: $status after ${SECONDS}s"
+          [[ "$status" == healthy ]] || { echo "::error::container is $status, not healthy"; exit 1; }
+
+      - name: Container logs
+        if: failure()
+        run: |
+          docker inspect -f '{{json .State}}' "$CONTAINER" || true
+          docker logs "$CONTAINER" || true
+
+      - name: Remove the container
+        if: always()
+        run: docker rm -f "$CONTAINER" || true
