@@ -7,6 +7,9 @@ on:
     branches: [main]
   push:
     branches: [main]
+  schedule:
+    - cron: "37 6 * * *"   # daily: GITHUB_TOKEN auto-merges trigger no push run on main
+  workflow_dispatch:
 
 permissions:
   contents: read

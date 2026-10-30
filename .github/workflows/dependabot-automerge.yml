@@ -1,0 +1,62 @@
+# Auto-merges Dependabot pull requests whose every update is a semver patch or minor bump.
+# It only turns on auto-merge: GitHub merges after the required `check` and `image` jobs pass.
+# Anything else (a major bump, security or not, an unknown type, or metadata that could not be
+# read) gets the needs-review label and a comment instead.
+name: Dependabot auto-merge
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  automerge:
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Fetch metadata
+        id: meta
+        uses: dependabot/fetch-metadata@v3
+        continue-on-error: true   # a failure falls through to needs-review below
+
+      - name: Auto-merge or flag for review
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          META_OUTCOME: ${{ steps.meta.outcome }}
+          UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+          DEPS_JSON: ${{ steps.meta.outputs.updated-dependencies-json }}
+        shell: bash
+        run: |
+          echo "fetch-metadata: $META_OUTCOME; update-type (informational): ${UPDATE_TYPE:-<none>}"
+          reason=""
+          if [[ "$META_OUTCOME" != success ]]; then
+            reason="fetch-metadata failed"
+          elif [[ -z "$DEPS_JSON" ]]; then
+            reason="fetch-metadata returned no dependencies"
+          elif ! jq -e 'type == "array"' <<<"$DEPS_JSON" >/dev/null 2>&1; then
+            reason="the dependency metadata could not be parsed"
+          elif jq -e 'length == 0' <<<"$DEPS_JSON" >/dev/null; then
+            reason="fetch-metadata returned no dependencies"
+          elif ! jq -e 'all(.[]; .updateType == "version-update:semver-patch" or .updateType == "version-update:semver-minor")' <<<"$DEPS_JSON" >/dev/null; then
+            types=$(jq -r '[.[] | "\(.dependencyName // "?"): \(.updateType // "unknown")"
+                            | select(test(": version-update:semver-(patch|minor)$") | not)] | join(", ")' <<<"$DEPS_JSON")
+            reason="not every update is a semver patch or minor ($types)"
+          fi
+
+          if [[ -z "$reason" ]]; then
+            jq -r '.[] | "\(.dependencyName): \(.updateType)"' <<<"$DEPS_JSON"
+            gh pr merge --auto --squash "$PR_URL"
+          else
+            echo "needs review: $reason"
+            gh pr merge --disable-auto "$PR_URL" 2>/dev/null || true   # in case an earlier push enabled it
+            gh label create needs-review --force --color D93F0B --description "Dependabot update that needs a human review"
+            gh pr edit "$PR_URL" --add-label needs-review
+            gh pr comment "$PR_URL" --edit-last --create-if-none --body "Not auto-merged: $reason."
+          fi
