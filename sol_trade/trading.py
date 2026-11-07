@@ -88,6 +88,7 @@ _balance_cache = BalanceCache()
 _dry_run = False
 _last_price_map: dict[str, float] = {}  # by mint, USD
 _strategy_errors: dict[str, str] = {}  # symbol -> last load error logged
+_reference_errors: dict[str, str] = {}  # symbol -> last absent-reference error logged
 # Total capital (cash plus positions) of the main book, recomputed every cycle.
 _current_total_capital: float = 0.0
 # P&L baseline: value at run start; recaptured when the token set changes.
@@ -293,6 +294,24 @@ def _load(symbol: str) -> Strategy | None:
     return strategy
 
 
+def _report_absent_references(symbol: str, absent: list[str]) -> None:
+    """Log once when a token's strategy reads a symbol with no stored candles, and once when it recovers."""
+    message = (
+        f"{symbol}: no stored candles for reference(s) {', '.join(absent)}; its bars are decided without them "
+        "and stay missing in backtests (run backfill)"
+        if absent
+        else None
+    )
+    if message and _reference_errors.get(symbol) != message:
+        log_general.error(message)
+    elif not message and symbol in _reference_errors:
+        log_general.info(f"{symbol}: reference candles are stored again")
+    if message:
+        _reference_errors[symbol] = message
+    else:
+        _reference_errors.pop(symbol, None)
+
+
 def run_symbol(
     book: Book, symbol: str, strategy: Strategy, now: float | None = None, allow_entry: bool = True
 ) -> dict[str, Any]:
@@ -302,10 +321,10 @@ def run_symbol(
     sight only the newest closed bar counts). A live book ignores entry
     signals of replayed bars: only the newest bar may open a position.
 
-    A strategy that reads other symbols' candles waits for them: a bar is
-    processed once every fresh reference has its bar, so live decisions see
-    the values a backtest of the same bars sees. A reference without fresh
-    candles doesn't hold the token up; its missing bars read as NaN.
+    A strategy that reads other symbols' candles never waits for them. Each
+    bar is decided on the reference bars stored at that moment, and any
+    reference bar missing then is recorded, so backtests and replays read it
+    as missing too, even after it arrives.
     """
     now = time.time() if now is None else now
     risk = strategy.risk
@@ -317,18 +336,17 @@ def run_symbol(
         missed = int(min(max((newest_closed - state.last_bar_ts) // period, 0), _MAX_REPLAY_BARS))
     frame, forming = history.window(symbol, strategy.timeframe, strategy.lookback + missed, now=now)
     ts = frame["ts"].to_numpy()
+    new = np.flatnonzero(ts > state.last_bar_ts) if state.last_bar_ts is not None else np.array([len(ts) - 1])
     references = None
-    ready: int | None = None
     if strategy.references:
-        references, fresh = history.refresh_references(
+        references = history.refresh_references(
             strategy.references, strategy.timeframe, int(ts[0]), strategy.lookback + missed, now
         )
-        ready = references.ready_until() if fresh else None
-    waiting = ready is not None and int(ts[-1]) + period > ready
+        if len(new):
+            first = max(int(new[0]) - strategy.lookback + 1, 0)
+            references.record_unavailable(ts[first : int(new[-1]) + 1] + period, now)
+        _report_absent_references(symbol, references.absent())
     entry, exit_ = backtest.compute_signals(strategy, frame, symbol, references=references)
-    new = np.flatnonzero(ts > state.last_bar_ts) if state.last_bar_ts is not None else np.array([len(ts) - 1])
-    if waiting:
-        new = new[ts[new] + period <= ready]
     is_live = book.name == ledger.LIVE
     for i in new:
         bar_ts = int(ts[i])
@@ -342,7 +360,7 @@ def run_symbol(
         if is_live and action is not None and action.side == BUY and i != len(ts) - 1:
             log_general.info(f"{symbol}: stale entry signal from a replayed bar ignored")
             state.pending = None
-    if not waiting and forming is not None and len(ts) and forming.ts == int(ts[-1]) + period:
+    if forming is not None and len(ts) and forming.ts == int(ts[-1]) + period:
         book.on_open(symbol, forming.ts, forming.open, risk)
         book.on_low(symbol, forming.ts, forming.open, forming.low, risk)
     view = strategy.evaluate(

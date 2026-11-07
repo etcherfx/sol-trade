@@ -18,7 +18,7 @@ import pandas as pd
 from sol_trade import data_source
 from sol_trade.config import config
 from sol_trade.log import log_general
-from sol_trade.spec import timeframe_seconds
+from sol_trade.spec import COLUMNS, timeframe_seconds
 
 # Restart incremental updates this many bars before the newest stored bar, so
 # a bar stored while it was still forming (older versions did) gets repaired.
@@ -411,26 +411,55 @@ class MissingReference(ValueError):
         )
 
 
-def align(frame: pd.DataFrame, period: int, closes: np.ndarray, column: str) -> np.ndarray:
+def _unavailable_connect() -> sqlite3.Connection:
+    """The candle store with the table of reference close times the live loop decided without."""
+    conn = data_source._connect()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS reference_unavailable (
+            exchange    TEXT    NOT NULL,
+            symbol      TEXT    NOT NULL,
+            timeframe   TEXT    NOT NULL,
+            close_ts    INTEGER NOT NULL,
+            recorded_at REAL    NOT NULL,
+            PRIMARY KEY (exchange, symbol, timeframe, close_ts)
+        )
+        """
+    )
+    return conn
+
+
+def _bar_index(frame: pd.DataFrame, period: int, closes: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """For each close time: the row of the bar :func:`align` reads, and whether there is one."""
+    flat = np.asarray(closes, dtype=float).ravel()
+    if frame.empty:
+        return np.zeros(flat.shape, dtype=int), np.zeros(flat.shape, dtype=bool)
+    bar_closes = frame["ts"].to_numpy(dtype=float) + period
+    index = np.searchsorted(bar_closes, flat, side="right") - 1
+    found = index >= 0
+    index = np.maximum(index, 0)
+    found &= bar_closes[index] > flat - period
+    return index, found
+
+
+def align(
+    frame: pd.DataFrame, period: int, closes: np.ndarray, column: str, unavailable: np.ndarray | None = None
+) -> np.ndarray:
     """``column`` of ``frame`` as of each close time in ``closes``, else NaN.
 
     The value at ``t`` is that of the newest bar of ``frame`` that closed at
     or before ``t`` and less than one ``period`` before it: a bar that closes
     after ``t`` is never seen, and a missing bar is NaN rather than the bar
-    before it. ``frame`` holds closed bars on the same timeframe, oldest first.
+    before it. Close times in ``unavailable`` are NaN whatever is stored.
+    ``frame`` holds closed bars on the same timeframe, oldest first.
     """
     closes = np.asarray(closes, dtype=float)
     out = np.full(closes.shape, np.nan)
-    if frame.empty:
-        return out
-    bar_closes = frame["ts"].to_numpy(dtype=float) + period
-    values = frame[column].to_numpy(dtype=float)
-    flat = closes.ravel()
-    index = np.searchsorted(bar_closes, flat, side="right") - 1
-    found = index >= 0
-    index = np.maximum(index, 0)
-    found &= bar_closes[index] > flat - period
-    out.ravel()[found] = values[index[found]]
+    index, found = _bar_index(frame, period, closes)
+    if unavailable is not None and len(unavailable):
+        found &= ~np.isin(closes.ravel(), unavailable)
+    if found.any():
+        out.ravel()[found] = frame[column].to_numpy(dtype=float)[index[found]]
     return out
 
 
@@ -439,21 +468,71 @@ class References:
     """Closed bars of the symbols a strategy reads, as its ``reference`` input.
 
     Backtests, held-out periods, paper books and the live loop all read
-    reference values through :func:`align`.
+    reference values through :func:`align`, with the close times the live
+    loop decided without a reference bar (``unavailable``) read as missing.
     """
 
     timeframe: str
     frames: dict[str, pd.DataFrame]
+    unavailable: dict[str, np.ndarray] = field(default_factory=dict)
 
     def __call__(self, symbol: str, column: str, closes: np.ndarray) -> np.ndarray:
-        return align(self.frames[symbol], timeframe_seconds(self.timeframe), closes, column)
+        return align(
+            self.frames[symbol], timeframe_seconds(self.timeframe), closes, column, self.unavailable.get(symbol)
+        )
 
-    def ready_until(self) -> int | None:
-        """The newest close time every reference has a bar for; None if one has none."""
+    def absent(self) -> list[str]:
+        """Symbols with no bar at all among the loaded ones."""
+        return [s for s, f in self.frames.items() if f.empty]
+
+    def record_unavailable(self, closes: np.ndarray, now: float | None = None) -> dict[str, int]:
+        """Store every close time in ``closes`` a reference has no complete bar for.
+
+        The live loop calls this before it decides bars with these close
+        times, so a bar that arrives later is still read as missing by every
+        backtest, held-out period and paper replay. Returns the new count per
+        symbol.
+        """
+        now = time.time() if now is None else now
         period = timeframe_seconds(self.timeframe)
-        if not self.frames or any(f.empty for f in self.frames.values()):
-            return None
-        return min(int(f["ts"].iat[-1]) + period for f in self.frames.values())
+        closes = np.unique(np.asarray(closes, dtype=float).ravel())
+        recorded: dict[str, int] = {}
+        for symbol, frame in self.frames.items():
+            index, found = _bar_index(frame, period, closes)
+            if found.any():
+                rows = frame[list(COLUMNS)].to_numpy(dtype=float)[index]
+                found &= ~np.isnan(rows).any(axis=1)
+            known = self.unavailable.get(symbol, np.zeros(0))
+            missing = closes[~found & ~np.isin(closes, known)]
+            if not missing.size:
+                continue
+            source = source_for(symbol)
+            conn = _unavailable_connect()
+            try:
+                conn.executemany(
+                    "INSERT OR IGNORE INTO reference_unavailable VALUES (?, ?, ?, ?, ?)",
+                    [(source.exchange, source.pair, self.timeframe, int(t), now) for t in missing],
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            self.unavailable[symbol] = np.union1d(known, missing)
+            recorded[symbol] = int(missing.size)
+        return recorded
+
+
+def load_unavailable(source: Source, timeframe: str) -> np.ndarray:
+    """Close times the live loop decided without a bar of ``source``, sorted."""
+    conn = _unavailable_connect()
+    try:
+        rows = conn.execute(
+            "SELECT close_ts FROM reference_unavailable WHERE exchange = ? AND symbol = ? AND timeframe = ? "
+            "ORDER BY close_ts",
+            (source.exchange, source.pair, timeframe),
+        ).fetchall()
+    finally:
+        conn.close()
+    return np.array([r[0] for r in rows], dtype=float)
 
 
 def load_references(
@@ -461,35 +540,34 @@ def load_references(
     required: bool = True,
 ) -> References:
     """Stored bars of each symbol in ``[start, end)``; raises :class:`MissingReference` when one has none."""
-    frames = {}
+    frames, unavailable = {}, {}
     for symbol in symbols:
-        frame = load_bars(source_for(symbol), timeframe, start, end)
+        source = source_for(symbol)
+        frame = load_bars(source, timeframe, start, end)
         if required and frame.empty:
             raise MissingReference(symbol, timeframe)
         frames[symbol] = frame
-    return References(timeframe, frames)
+        unavailable[symbol] = load_unavailable(source, timeframe)
+    return References(timeframe, frames, unavailable)
 
 
 def refresh_references(
     symbols: tuple[str, ...] | list[str], timeframe: str, start: int, bars: int, now: float | None = None
-) -> tuple[References, bool]:
+) -> References:
     """Update every reference like :func:`window` and load its bars from ``start`` on.
 
-    Returns the references and whether all of them are fresh. A reference
-    without fresh candles is logged and read as far as it is stored, so its
-    newest bars are NaN.
+    A reference whose exchange fails is logged and read as far as it is
+    stored; the live loop never waits for one.
     """
     period = timeframe_seconds(timeframe)
     now = time.time() if now is None else now
-    fresh = True
     for symbol in symbols:
         try:
             window(symbol, timeframe, bars, now)
         except ConnectionError as e:
-            log_general.warning(f"reference {symbol}: {e}; its newest bars read as missing")
-            fresh = False
+            log_general.warning(f"reference {symbol}: {e}; bars decided without it read as missing")
     end = int(now // period) * period
-    return load_references(symbols, timeframe, start - period, end, required=False), fresh
+    return load_references(symbols, timeframe, start - period, end, required=False)
 
 
 def window(symbol: str, timeframe: str, lookback: int, now: float | None = None) -> tuple[pd.DataFrame, Bar | None]:

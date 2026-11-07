@@ -306,6 +306,7 @@ class _Compiler:
 
         canonical = canonical_json(spec)
         assert entry is not None and lookback is not None and isinstance(name, str)
+        reference_warmup = max(self._ref_need_rule(spec["entry"]), self._ref_need_rule(spec.get("exit")))
         return Strategy(
             name=name,
             description=spec.get("description", ""),
@@ -319,10 +320,47 @@ class _Compiler:
             uses_sentiment=self.uses_sentiment,
             uses_fear_greed=self.uses_fear_greed,
             references=tuple(sorted(self.references)),
+            reference_warmup=reference_warmup,
             _order=[self.compiled[n] for n in self.order],
             _entry=entry,
             _exit=exit_rule,
         )
+
+    # -- reference history (run on a spec that compiled without errors)
+
+    def _ref_need_rule(self, rule: Any) -> int:
+        """Consecutive reference bars a rule needs to have a value; 0 when it reads no reference."""
+        if rule is None:
+            return 0
+        if isinstance(rule, list):
+            return max(self._ref_need(rule[0]), self._ref_need(rule[2]))
+        (key, args), = rule.items()
+        if key in ("all", "any"):
+            return max(self._ref_need_rule(item) for item in args)
+        if key == "not":
+            return self._ref_need_rule(args)
+        need = max(self._ref_need(args[0]), self._ref_need(args[1]))  # crosses_above / crosses_below
+        return need + 1 if need else 0
+
+    def _ref_need(self, value: Any) -> int:
+        if isinstance(value, dict):
+            (op, args), = value.items()
+            if op == "ref":
+                return 1
+            if op == "shift":
+                need = self._ref_need(args[0])
+                return need + args[1] if need else 0
+            return max(self._ref_need(args[0]), self._ref_need(args[1]))
+        if not isinstance(value, str) or value in COLUMNS:
+            return 0
+        base, _, output = value.partition(".")
+        spec = self.indicator_specs[base]
+        fn = _FUNCTIONS[spec["fn"]]
+        need = self._ref_need(spec.get("input", "close")) if fn.takes_input else 0
+        if not need:
+            return 0
+        params = {k: spec.get(k, p.default) for k, p in fn.params.items()}
+        return fn.need(params, need)[output]
 
     def _risk(self, risk: Any) -> "Risk":
         values: dict[str, float] = {}
@@ -538,8 +576,10 @@ class _Compiler:
             a, b = left[0], right[0]
 
             def comparison(ctx: EvalContext) -> np.ndarray:
+                x, y = np.asarray(a(ctx), dtype=float), np.asarray(b(ctx), dtype=float)
                 with np.errstate(invalid="ignore"):
-                    return np.broadcast_to(compare(a(ctx), b(ctx)), ctx.columns["close"].shape)
+                    result = compare(x, y) & ~(np.isnan(x) | np.isnan(y))  # missing is false, even for !=
+                return np.broadcast_to(result, ctx.columns["close"].shape)
 
             return comparison, max(left[1], right[1])
         if isinstance(rule, dict) and len(rule) == 1:
@@ -658,6 +698,7 @@ class Strategy:
     uses_sentiment: bool
     uses_fear_greed: bool
     references: tuple[str, ...]  # symbols whose candles the rules read, sorted
+    reference_warmup: int  # consecutive reference bars the rules need for a value; 0 without references
     _order: list[Callable[[EvalContext], None]]
     _entry: Rule
     _exit: Rule | None
