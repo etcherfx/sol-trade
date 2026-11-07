@@ -225,8 +225,8 @@ def test_refuses_while_the_kill_switch_is_on(jup, answer):
     assert jup.orders == []
 
 
-@pytest.mark.parametrize("book", [ledger.LIVE, ledger.DRY_RUN])
-def test_refuses_while_the_bot_holds_a_position(jup, answer, monkeypatch, mints, book):
+@pytest.mark.parametrize("book", [ledger.LIVE, ledger.DRY_RUN, "paper:swing/SOL"])
+def test_refuses_while_any_bot_book_holds_a_position(jup, answer, monkeypatch, mints, book):
     position = Position(mints["sol_symbol"], "default", "h", SOL_PRICE, 0.1, 15.0, 0)
     monkeypatch.setattr(ledger, "open_positions", lambda name=None: [(book, position)])
     code, payload = _run()

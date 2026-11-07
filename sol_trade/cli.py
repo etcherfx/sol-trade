@@ -586,8 +586,7 @@ def cmd_swap_smoke(args: argparse.Namespace) -> dict[str, Any]:
         raise CliError("paused", "the kill switch is on; clear it with resume first", [paused])
     held = [
         {"book": book, "symbol": position.symbol, "size": position.size}
-        for book, position in ledger.open_positions()
-        if book in (ledger.LIVE, ledger.DRY_RUN)
+        for book, position in ledger.open_positions()  # every bot book: live, dry run and paper
     ]
     if held:
         raise CliError("open_positions", f"the bot holds {len(held)} open position(s); run this when it holds none",
