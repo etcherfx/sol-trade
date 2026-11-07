@@ -28,6 +28,7 @@ from sol_trade.config import config
 SCHEMA = 1
 COLUMNS = ("open", "high", "low", "close", "volume")
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+SYMBOL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$")
 TIMEFRAME_RE = re.compile(r"^([1-9][0-9]*)([mhdw])$")
 _UNIT_SECONDS = {"m": 60, "h": 3600, "d": 86400, "w": 604800}
 MAX_LOOKBACK = 5000
@@ -163,11 +164,24 @@ class EvalContext:
     sentiment: Callable[[str | None, np.ndarray, float], dict[str, np.ndarray]] | None = None
     # bar close times (L, N) -> the Fear & Greed index known at each close
     fear_greed: Callable[[np.ndarray], np.ndarray] | None = None
+    # (symbol, column, bar close times (L, N)) -> that symbol's column as of each close
+    reference: Callable[[str, str, np.ndarray], np.ndarray] | None = None
     values: dict[str, Any] = field(default_factory=dict)
+    references: dict[tuple[str, str], np.ndarray] = field(default_factory=dict)
 
 
 Operand = Callable[[EvalContext], Any]
 Rule = Callable[[EvalContext], np.ndarray]
+
+
+def _reference_series(ctx: EvalContext, symbol: str, column: str) -> np.ndarray:
+    key = (symbol, column)
+    if key not in ctx.references:
+        if ctx.reference is None:
+            raise ValueError(f"the strategy reads {symbol} {column} but no reference candles were given")
+        closes = ctx.times + ctx.period_seconds
+        ctx.references[key] = np.asarray(ctx.reference(symbol, column, closes), dtype=float).reshape(closes.shape)
+    return ctx.references[key]
 
 
 def _run_indicator(fn: str, params: dict[str, Any], source: Operand | None, ctx: EvalContext) -> Any:
@@ -228,6 +242,7 @@ class _Compiler:
         self._failed: set[str] = set()
         self.uses_sentiment = False
         self.uses_fear_greed = False
+        self.references: set[str] = set()
 
     def error(self, path: str, message: str) -> None:
         self.errors.append(f"{path}: {message}")
@@ -303,6 +318,7 @@ class _Compiler:
             hash=hashlib.sha256(canonical.encode()).hexdigest(),
             uses_sentiment=self.uses_sentiment,
             uses_fear_greed=self.uses_fear_greed,
+            references=tuple(sorted(self.references)),
             _order=[self.compiled[n] for n in self.order],
             _entry=entry,
             _exit=exit_rule,
@@ -457,8 +473,32 @@ class _Compiler:
                         return func(a(ctx), b(ctx))
 
                 return arith, max(left[1], right[1])
-        self.error(path, "expected a number, a column or indicator name, or {shift|add|sub|mul|div: [...]}")
+            if op == "ref":
+                return self._symbol_reference(args, f"{path}.ref")
+        self.error(path, "expected a number, a column or indicator name, or {shift|add|sub|mul|div|ref: ...}")
         return None
+
+    def _symbol_reference(self, args: Any, path: str) -> tuple[Operand, int] | None:
+        """``{"symbol": ..., "series": column}``: another symbol's bar column on the same timeframe."""
+        if not isinstance(args, dict):
+            self.error(path, 'must be an object like {"symbol": "ABC", "series": "close"}')
+            return None
+        ok = True
+        for key in sorted(set(args) - {"symbol", "series"}):
+            self.error(f"{path}.{key}", "unknown key; allowed: series, symbol")
+            ok = False
+        symbol, column = args.get("symbol"), args.get("series")
+        if not isinstance(symbol, str) or not SYMBOL_RE.match(symbol):
+            self.error(f"{path}.symbol", "must be a token symbol: letters, digits, '.', '_' or '-'")
+            ok = False
+        if column not in COLUMNS:
+            self.error(f"{path}.series", f"must be one of {', '.join(COLUMNS)}")
+            ok = False
+        if not ok:
+            return None
+        assert isinstance(symbol, str) and isinstance(column, str)
+        self.references.add(symbol)
+        return (lambda ctx: _reference_series(ctx, symbol, column)), 1
 
     def _reference(self, ref: str, path: str) -> tuple[Operand, int] | None:
         if ref in COLUMNS:
@@ -617,6 +657,7 @@ class Strategy:
     hash: str
     uses_sentiment: bool
     uses_fear_greed: bool
+    references: tuple[str, ...]  # symbols whose candles the rules read, sorted
     _order: list[Callable[[EvalContext], None]]
     _entry: Rule
     _exit: Rule | None
@@ -628,10 +669,15 @@ class Strategy:
         symbol: str | None = None,
         sentiment: Callable[[str | None, np.ndarray, float], dict[str, np.ndarray]] | None = None,
         fear_greed: Callable[[np.ndarray], np.ndarray] | None = None,
+        reference: Callable[[str, str, np.ndarray], np.ndarray] | None = None,
     ) -> Evaluation:
-        """Signals for the last bar of each window; arrays are ``(L, N)``."""
+        """Signals for the last bar of each window; arrays are ``(L, N)``.
+
+        A strategy with :attr:`references` needs ``reference`` (see
+        :class:`sol_trade.history.References`); without it evaluation raises.
+        """
         columns = {c: np.asarray(bars[c], dtype=float) for c in COLUMNS}
-        ctx = EvalContext(columns, times, self.period_seconds, symbol, sentiment, fear_greed)
+        ctx = EvalContext(columns, times, self.period_seconds, symbol, sentiment, fear_greed, reference)
         for step in self._order:
             step(ctx)
         entry = np.asarray(self._entry(ctx))[-1].astype(bool)

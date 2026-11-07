@@ -301,6 +301,11 @@ def run_symbol(
     Closed bars since the last one processed are replayed in order (on first
     sight only the newest closed bar counts). A live book ignores entry
     signals of replayed bars: only the newest bar may open a position.
+
+    A strategy that reads other symbols' candles waits for them: a bar is
+    processed once every fresh reference has its bar, so live decisions see
+    the values a backtest of the same bars sees. A reference without fresh
+    candles doesn't hold the token up; its missing bars read as NaN.
     """
     now = time.time() if now is None else now
     risk = strategy.risk
@@ -311,9 +316,19 @@ def run_symbol(
     if state.last_bar_ts is not None:
         missed = int(min(max((newest_closed - state.last_bar_ts) // period, 0), _MAX_REPLAY_BARS))
     frame, forming = history.window(symbol, strategy.timeframe, strategy.lookback + missed, now=now)
-    entry, exit_ = backtest.compute_signals(strategy, frame, symbol)
     ts = frame["ts"].to_numpy()
+    references = None
+    ready: int | None = None
+    if strategy.references:
+        references, fresh = history.refresh_references(
+            strategy.references, strategy.timeframe, int(ts[0]), strategy.lookback + missed, now
+        )
+        ready = references.ready_until() if fresh else None
+    waiting = ready is not None and int(ts[-1]) + period > ready
+    entry, exit_ = backtest.compute_signals(strategy, frame, symbol, references=references)
     new = np.flatnonzero(ts > state.last_bar_ts) if state.last_bar_ts is not None else np.array([len(ts) - 1])
+    if waiting:
+        new = new[ts[new] + period <= ready]
     is_live = book.name == ledger.LIVE
     for i in new:
         bar_ts = int(ts[i])
@@ -327,7 +342,7 @@ def run_symbol(
         if is_live and action is not None and action.side == BUY and i != len(ts) - 1:
             log_general.info(f"{symbol}: stale entry signal from a replayed bar ignored")
             state.pending = None
-    if forming is not None and len(ts) and forming.ts == int(ts[-1]) + period:
+    if not waiting and forming is not None and len(ts) and forming.ts == int(ts[-1]) + period:
         book.on_open(symbol, forming.ts, forming.open, risk)
         book.on_low(symbol, forming.ts, forming.open, forming.low, risk)
     view = strategy.evaluate(
@@ -336,6 +351,7 @@ def run_symbol(
         symbol,
         sentiment.features if strategy.uses_sentiment else None,
         fear_greed.values if strategy.uses_fear_greed else None,
+        references,
     )
     return {
         "bars": len(new),

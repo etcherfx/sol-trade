@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 
 from sol_trade import costs as cost_module
+from sol_trade import history
 from sol_trade.config import config
 from sol_trade.costs import CostModel
 from sol_trade.engine import FORCED, Book, SimExecutor, Trade
@@ -33,13 +34,18 @@ def compute_signals(
     symbol: str | None = None,
     sentiment: Callable[..., Any] | None = None,
     fear_greed: Callable[..., Any] | None = None,
+    references: Callable[..., Any] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Entry and exit flags per bar of ``frame``; bar ``i`` uses the window ending at ``i``.
 
     Bars without a full window of history get no signal. Strategies that
-    read sentiment or the Fear & Greed index get the stored values unless
-    ``sentiment`` or ``fear_greed`` is given.
+    read sentiment, the Fear & Greed index or other symbols' candles get the
+    stored values unless ``sentiment``, ``fear_greed`` or ``references`` is
+    given; a referenced symbol with no stored candles raises
+    :class:`~sol_trade.history.MissingReference`.
     """
+    if references is None and strategy.references:
+        references = history.load_references(strategy.references, strategy.timeframe)
     if sentiment is None and strategy.uses_sentiment:
         from sol_trade.sentiment import features as sentiment
     if fear_greed is None and strategy.uses_fear_greed:
@@ -56,7 +62,7 @@ def compute_signals(
         stop = min(start + _CHUNK, n - length + 1)  # window starts in [start, stop)
         span = slice(start, stop + length - 1)
         bars = {c: windows(v[span], length) for c, v in series.items()}
-        result = strategy.evaluate(bars, windows(times[span], length), symbol, sentiment, fear_greed)
+        result = strategy.evaluate(bars, windows(times[span], length), symbol, sentiment, fear_greed, references)
         entry[start + length - 1 : stop + length - 1] = result.entry
         exit_[start + length - 1 : stop + length - 1] = result.exit
     return entry, exit_

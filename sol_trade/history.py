@@ -395,6 +395,103 @@ def gap_fraction(frame: pd.DataFrame, timeframe: str) -> float:
     return float(expected - len(ts)) / expected if expected else 0.0
 
 
+# -------------------------------------------------------------- references
+
+
+class MissingReference(ValueError):
+    """A strategy reads a symbol that has no stored candles on its timeframe."""
+
+    def __init__(self, symbol: str, timeframe: str) -> None:
+        self.symbol = symbol
+        self.timeframe = timeframe
+        source = source_for(symbol)
+        super().__init__(
+            f"no stored {timeframe} candles for reference {symbol} ({source.pair} on {source.exchange}); "
+            f"run backfill --symbols {symbol} --timeframes {timeframe}"
+        )
+
+
+def align(frame: pd.DataFrame, period: int, closes: np.ndarray, column: str) -> np.ndarray:
+    """``column`` of ``frame`` as of each close time in ``closes``, else NaN.
+
+    The value at ``t`` is that of the newest bar of ``frame`` that closed at
+    or before ``t`` and less than one ``period`` before it: a bar that closes
+    after ``t`` is never seen, and a missing bar is NaN rather than the bar
+    before it. ``frame`` holds closed bars on the same timeframe, oldest first.
+    """
+    closes = np.asarray(closes, dtype=float)
+    out = np.full(closes.shape, np.nan)
+    if frame.empty:
+        return out
+    bar_closes = frame["ts"].to_numpy(dtype=float) + period
+    values = frame[column].to_numpy(dtype=float)
+    flat = closes.ravel()
+    index = np.searchsorted(bar_closes, flat, side="right") - 1
+    found = index >= 0
+    index = np.maximum(index, 0)
+    found &= bar_closes[index] > flat - period
+    out.ravel()[found] = values[index[found]]
+    return out
+
+
+@dataclass
+class References:
+    """Closed bars of the symbols a strategy reads, as its ``reference`` input.
+
+    Backtests, held-out periods, paper books and the live loop all read
+    reference values through :func:`align`.
+    """
+
+    timeframe: str
+    frames: dict[str, pd.DataFrame]
+
+    def __call__(self, symbol: str, column: str, closes: np.ndarray) -> np.ndarray:
+        return align(self.frames[symbol], timeframe_seconds(self.timeframe), closes, column)
+
+    def ready_until(self) -> int | None:
+        """The newest close time every reference has a bar for; None if one has none."""
+        period = timeframe_seconds(self.timeframe)
+        if not self.frames or any(f.empty for f in self.frames.values()):
+            return None
+        return min(int(f["ts"].iat[-1]) + period for f in self.frames.values())
+
+
+def load_references(
+    symbols: tuple[str, ...] | list[str], timeframe: str, start: int | None = None, end: int | None = None,
+    required: bool = True,
+) -> References:
+    """Stored bars of each symbol in ``[start, end)``; raises :class:`MissingReference` when one has none."""
+    frames = {}
+    for symbol in symbols:
+        frame = load_bars(source_for(symbol), timeframe, start, end)
+        if required and frame.empty:
+            raise MissingReference(symbol, timeframe)
+        frames[symbol] = frame
+    return References(timeframe, frames)
+
+
+def refresh_references(
+    symbols: tuple[str, ...] | list[str], timeframe: str, start: int, bars: int, now: float | None = None
+) -> tuple[References, bool]:
+    """Update every reference like :func:`window` and load its bars from ``start`` on.
+
+    Returns the references and whether all of them are fresh. A reference
+    without fresh candles is logged and read as far as it is stored, so its
+    newest bars are NaN.
+    """
+    period = timeframe_seconds(timeframe)
+    now = time.time() if now is None else now
+    fresh = True
+    for symbol in symbols:
+        try:
+            window(symbol, timeframe, bars, now)
+        except ConnectionError as e:
+            log_general.warning(f"reference {symbol}: {e}; its newest bars read as missing")
+            fresh = False
+    end = int(now // period) * period
+    return load_references(symbols, timeframe, start - period, end, required=False), fresh
+
+
 def window(symbol: str, timeframe: str, lookback: int, now: float | None = None) -> tuple[pd.DataFrame, Bar | None]:
     """Refresh and return the newest ``lookback`` closed bars plus the forming bar.
 

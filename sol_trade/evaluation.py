@@ -188,6 +188,40 @@ def _data_info(frame: pd.DataFrame, strategy: Strategy, cut: Split, symbol: str)
     }
 
 
+def _reference_info(strategy: Strategy, frame: pd.DataFrame, cut: Split) -> tuple[dict[str, Any], list[str]]:
+    """Per referenced symbol: its source, stored range and share of selection bars it has a value for.
+
+    Also returns a reason per reference with no stored candles or none in
+    the selection period: those leave the strategy without its input.
+    """
+    info: dict[str, Any] = {}
+    reasons: list[str] = []
+    if not strategy.references:
+        return info, reasons
+    refs = history.load_references(strategy.references, strategy.timeframe, required=False)
+    closes = frame["ts"].to_numpy(dtype=float)[cut.start : cut.holdout_start] + strategy.period_seconds
+    for symbol in strategy.references:
+        ref = refs.frames[symbol]
+        ts = ref["ts"]
+        aligned = refs(symbol, "close", closes)
+        coverage = float(np.isfinite(aligned).mean()) if aligned.size else 0.0
+        info[symbol] = {
+            "source": history.source_for(symbol).as_dict(),
+            "bars": len(ref),
+            "first": _iso(int(ts.iat[0])) if len(ref) else None,
+            "last": _iso(int(ts.iat[-1])) if len(ref) else None,
+            "selection_coverage": round(coverage, 6),
+        }
+        if ref.empty:
+            reasons.append(str(history.MissingReference(symbol, strategy.timeframe)))
+        elif coverage == 0:
+            reasons.append(
+                f"reference {symbol} has no {strategy.timeframe} bars in the selection period; "
+                f"run backfill --symbols {symbol} --timeframes {strategy.timeframe}"
+            )
+    return info, reasons
+
+
 def _cost_flags(model: CostModel, symbol: str) -> list[str]:
     if model.source == "default":
         return [COSTS_DEFAULT]
@@ -238,6 +272,11 @@ def evaluate(
             rpc=_rpc_delta(before),
         )
         return result
+    if strategy.references:
+        data["references"], missing = _reference_info(strategy, frame, cut)
+        if missing:
+            result.update(verdict=INSUFFICIENT, reasons=missing, rpc=_rpc_delta(before))
+            return result
 
     signals = backtest.compute_signals(strategy, frame, symbol)
     capital, trade_size = backtest.sizing()
@@ -356,6 +395,14 @@ def holdout(
             verdict=INSUFFICIENT, passed=False, reasons=["no held-out bars; run backfill"], start_ts=start_ts,
             rpc=_rpc_delta(before),
         )
+        return result
+    missing = [
+        str(history.MissingReference(s, strategy.timeframe))
+        for s, f in history.load_references(strategy.references, strategy.timeframe, required=False).frames.items()
+        if f.empty
+    ]
+    if missing:
+        result.update(verdict=INSUFFICIENT, passed=False, reasons=missing, start_ts=start_ts, rpc=_rpc_delta(before))
         return result
     signals = backtest.compute_signals(strategy, frame, symbol)
     capital, trade_size = backtest.sizing()
