@@ -344,11 +344,16 @@ def run_symbol(
         references = history.refresh_references(
             strategy.references, strategy.timeframe, int(ts[0]), strategy.lookback + missed, now
         )
+        backtest.book_references(strategy, symbol, book.name, references)
         if len(new):
             first = max(int(new[0]) - strategy.lookback + 1, 0)
-            references.record_unavailable(ts[first : int(new[-1]) + 1] + period, strategy.reference_series, now)
+            missing = references.missing(ts[first : int(new[-1]) + 1] + period, strategy.reference_series)
+            ledger.record_reference_marks(book.name, strategy.hash, symbol, missing, now)
+            references.mark(missing)
         absent = references.absent()
         _report_absent_references(symbol, absent)
+        if absent and len(new):
+            ledger.record_blocked_entries(book.name, strategy.hash, symbol, [int(ts[i]) for i in new], now)
         allow_entry = allow_entry and not absent
     entry, exit_ = backtest.compute_signals(strategy, frame, symbol, references=references)
     is_live = book.name == ledger.LIVE

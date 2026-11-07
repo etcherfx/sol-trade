@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 
 from sol_trade import costs as cost_module
-from sol_trade import history
+from sol_trade import history, ledger
 from sol_trade.config import config
 from sol_trade.costs import CostModel
 from sol_trade.engine import FORCED, Book, SimExecutor, Trade
@@ -49,6 +49,37 @@ def compute_signals(
     for bars, result in _evaluate_frame(strategy, frame, symbol, sentiment, fear_greed, references):
         entry[bars] = result.entry
         exit_[bars] = result.exit
+    return entry, exit_
+
+
+def book_references(
+    strategy: Strategy, symbol: str, book: str, references: history.References | None = None
+) -> history.References | None:
+    """The strategy's references with the values ``book`` decided ``symbol`` without read as missing.
+
+    None for a strategy without references. Only the live loop and replays
+    of that book use this; research reads the candle store as it is.
+    """
+    if not strategy.references:
+        return None
+    if references is None:
+        references = history.load_references(strategy.references, strategy.timeframe, required=False)
+    references.mark(ledger.reference_marks(book, strategy.hash, symbol))
+    return references
+
+
+def book_signals(
+    strategy: Strategy, frame: pd.DataFrame, symbol: str, book: str
+) -> tuple[np.ndarray, np.ndarray]:
+    """Signals a replay of ``book`` uses: its own reference marks, and no entry where it blocked one.
+
+    For a strategy without references this is :func:`compute_signals`.
+    """
+    if not strategy.references:
+        return compute_signals(strategy, frame, symbol)
+    entry, exit_ = compute_signals(strategy, frame, symbol, references=book_references(strategy, symbol, book))
+    blocked = np.isin(frame["ts"].to_numpy(), ledger.blocked_entries(book, strategy.hash, symbol))
+    entry[blocked] = False
     return entry, exit_
 
 

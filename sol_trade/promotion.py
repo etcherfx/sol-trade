@@ -575,7 +575,7 @@ def _replay_comparison(
     start, end = int(ts.searchsorted(first)), int(ts.searchsorted(last_bar_ts, side="right"))
     if start < strategy.lookback - 1 or end <= start:
         return None, None
-    signals = backtest.compute_signals(strategy, frame, candidate.symbol)
+    signals = backtest.book_signals(strategy, frame, candidate.symbol, candidate.book_name)
     sim = backtest.simulate(
         strategy, candidate.symbol, frame, *signals, start, end, costs.model_for(candidate.symbol), capital,
         backtest.sizing()[1], force_close=False,

@@ -118,6 +118,24 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT NOT NULL,
     updated_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS reference_marks (
+    book TEXT NOT NULL,
+    strategy_hash TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    reference TEXT NOT NULL,
+    series TEXT NOT NULL,
+    close_ts INTEGER NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (book, strategy_hash, symbol, reference, series, close_ts)
+);
+CREATE TABLE IF NOT EXISTS blocked_entries (
+    book TEXT NOT NULL,
+    strategy_hash TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    bar_ts INTEGER NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (book, strategy_hash, symbol, bar_ts)
+);
 CREATE INDEX IF NOT EXISTS fills_book ON fills (book, symbol, ts);
 CREATE INDEX IF NOT EXISTS trades_book ON trades (book, symbol, exit_ts);
 """
@@ -241,6 +259,62 @@ def delete_book(book: str) -> None:
     with connect() as conn:
         conn.execute("DELETE FROM books WHERE book = ?", (book,))
         conn.execute("DELETE FROM positions WHERE book = ?", (book,))
+        conn.execute("DELETE FROM reference_marks WHERE book = ?", (book,))
+        conn.execute("DELETE FROM blocked_entries WHERE book = ?", (book,))
+
+
+# ------------------------------------------------- what a book decided without
+
+
+def record_reference_marks(
+    book: str, strategy_hash: str, symbol: str, missing: dict[tuple[str, str], Any], now: float | None = None
+) -> None:
+    """Store the reference values ``(reference, series) -> close times`` a book decided ``symbol`` without."""
+    now = time.time() if now is None else now
+    rows = [
+        (book, strategy_hash, symbol, reference, series, int(t), now)
+        for (reference, series), closes in missing.items()
+        for t in closes
+    ]
+    if rows:
+        with connect() as conn:
+            conn.executemany("INSERT OR IGNORE INTO reference_marks VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+
+
+def reference_marks(book: str, strategy_hash: str, symbol: str) -> dict[tuple[str, str], list[int]]:
+    """``(reference, series) -> close times``, sorted, that this book decided ``symbol`` without."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT reference, series, close_ts FROM reference_marks "
+            "WHERE book = ? AND strategy_hash = ? AND symbol = ? ORDER BY close_ts",
+            (book, strategy_hash, symbol),
+        ).fetchall()
+    marks: dict[tuple[str, str], list[int]] = {}
+    for reference, series, close_ts in rows:
+        marks.setdefault((reference, series), []).append(int(close_ts))
+    return marks
+
+
+def record_blocked_entries(
+    book: str, strategy_hash: str, symbol: str, bars: list[int], now: float | None = None
+) -> None:
+    """Store the bars (open times) on which a book opened no position because a reference was absent."""
+    now = time.time() if now is None else now
+    if bars:
+        with connect() as conn:
+            conn.executemany(
+                "INSERT OR IGNORE INTO blocked_entries VALUES (?, ?, ?, ?, ?)",
+                [(book, strategy_hash, symbol, int(ts), now) for ts in bars],
+            )
+
+
+def blocked_entries(book: str, strategy_hash: str, symbol: str) -> list[int]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT bar_ts FROM blocked_entries WHERE book = ? AND strategy_hash = ? AND symbol = ? ORDER BY bar_ts",
+            (book, strategy_hash, symbol),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
 
 
 # ----------------------------------------------------------- fills, trades

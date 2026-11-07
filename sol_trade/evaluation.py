@@ -222,7 +222,6 @@ def _reference_info(
             "last": _iso(int(ts.iat[-1])) if len(ref) else None,
             "coverage": round(float(present.mean()), 6) if present.size else 0.0,
             "usable_bars": usable_bars,
-            "unavailable_marked": {c: len(refs.unavailable.get((symbol, c), ())) for c in columns},
         }
         if ref.empty:
             reasons.append(str(history.MissingReference(symbol, strategy.timeframe)))

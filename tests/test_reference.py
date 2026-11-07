@@ -275,20 +275,22 @@ def test_every_comparison_with_a_missing_reference_is_false(monkeypatch, entry, 
 CLOSE_ONLY = [("REF", "close")]
 
 
-def test_bars_decided_without_a_reference_stay_missing_after_it_arrives(monkeypatch):
+def test_missing_lists_new_gaps_and_marks_read_as_missing(monkeypatch):
     monkeypatch.setattr(config(), "primary_mint_symbol", "QUOTE")
     stamps = T0 + np.array([0, 1, 3]) * PERIOD  # the bar opening at T0 + 2 periods is late
     _store_ref(_frame(stamps, [1.0, 2.0, 4.0]), "1m")
     closes = T0 + np.array([2, 3, 4], dtype=float) * PERIOD
     refs = history.load_references(("REF",), "1m")
-    assert refs.record_unavailable(closes, CLOSE_ONLY) == {("REF", "close"): 1}
-    assert refs.record_unavailable(closes, CLOSE_ONLY) == {}  # recorded once
+    missing = refs.missing(closes, CLOSE_ONLY)
+    np.testing.assert_array_equal(missing[("REF", "close")], [T0 + 3 * PERIOD])
+    refs.mark(missing)
+    assert refs.missing(closes, CLOSE_ONLY) == {}  # already marked
     _store_ref(_frame([T0 + 2 * PERIOD], [3.0]), "1m")  # the late bar arrives
 
     later = history.load_references(("REF",), "1m")
+    np.testing.assert_array_equal(later("REF", "close", closes), [2.0, 3.0, 4.0])  # the store as it is
+    later.mark(missing)
     np.testing.assert_array_equal(later("REF", "close", closes), [2.0, np.nan, 4.0])
-    unmarked = history.align(later.frames["REF"], PERIOD, closes, "close")
-    np.testing.assert_array_equal(unmarked, [2.0, 3.0, 4.0])
 
 
 def test_only_the_series_a_strategy_reads_decide_availability(monkeypatch):
@@ -297,22 +299,18 @@ def test_only_the_series_a_strategy_reads_decide_availability(monkeypatch):
     ref = _frame(ts, 3.0 + np.arange(60) % 4)
     ref.loc[30, "volume"] = np.nan  # a bar with a close but no volume
     _store_ref(ref, "1m")
-    own = _frame(ts, np.full(60, 2.0))
     strategy = spec.compile_spec({"schema": 1, "name": "close_only", "timeframe": "1m", "lookback": 5,
                                   "indicators": {"avg": {"fn": "sma", "period": 3, "input": REF_CLOSE}},
                                   "entry": ["avg", ">", 4]})
     assert strategy.reference_series == (("REF", "close"),)
-    before = np.concatenate(backtest.compute_signals(strategy, own, "TKN"))
     closes = ts + PERIOD
     refs = history.load_references(("REF",), "1m")
-    assert refs.record_unavailable(closes, strategy.reference_series) == {}  # the missing volume isn't read
-    np.testing.assert_array_equal(np.concatenate(backtest.compute_signals(strategy, own, "TKN")), before)
-    # A rule on volume records that bar, and the close stays readable.
-    assert refs.record_unavailable(closes, [("REF", "volume")]) == {("REF", "volume"): 1}
-    later = history.load_references(("REF",), "1m")
-    assert np.isnan(later("REF", "volume", closes[30:31])).all()
-    assert later("REF", "close", closes[30:31])[0] == ref["close"].iat[30]
-    np.testing.assert_array_equal(np.concatenate(backtest.compute_signals(strategy, own, "TKN")), before)
+    assert refs.missing(closes, strategy.reference_series) == {}  # the missing volume isn't read
+    volume = refs.missing(closes, [("REF", "volume")])
+    np.testing.assert_array_equal(volume[("REF", "volume")], closes[30:31])
+    refs.mark(volume)
+    assert np.isnan(refs("REF", "volume", closes[30:31])).all()
+    assert refs("REF", "close", closes[30:31])[0] == ref["close"].iat[30]
 
 
 # ------------------------------------------------------------- live loop
@@ -321,17 +319,22 @@ T0 = 1_700_000_000 - 1_700_000_000 % PERIOD
 
 
 class _Feed:
-    """A ccxt-like exchange for TKN/QUOTE and REF/QUOTE; REF can lag or be down, as a function of the time."""
+    """A ccxt-like exchange for TKN/QUOTE and REF/QUOTE.
+
+    REF can lag or be down, as a function of the time, and the REF bars
+    opening at the times in ``never`` are never published.
+    """
 
     id = "fake"
 
-    def __init__(self, own_ticks, ref_ticks, clock, lag=None, down=None):
+    def __init__(self, own_ticks, ref_ticks, clock, lag=None, down=None, never=()):
         self.timeframes = {"1m": "1m"}
         self.clock = clock
         self.own = FakeExchange(own_ticks, PERIOD, clock, T0)
         self.ref = FakeExchange(ref_ticks, PERIOD, clock, T0)
         self.lag = lag or (lambda now: 0)  # seconds after its close a REF bar is published
         self.down = down or (lambda now: False)
+        self.never = set(never)
 
     def fetch_ohlcv(self, pair, timeframe="1m", since=None, limit=100):
         if pair.startswith("TKN/"):
@@ -339,15 +342,15 @@ class _Feed:
         now = self.clock()
         if self.down(now):
             raise OSError("reference venue down")
-        rows = self.ref.fetch_ohlcv(pair, timeframe, since, limit)
+        rows = [r for r in self.ref.fetch_ohlcv(pair, timeframe, since, limit) if r[0] // 1000 not in self.never]
         lag = self.lag(now)
         return [r for r in rows if r[0] // 1000 + PERIOD <= now - lag] if lag else rows
 
 
-def _live(monkeypatch, book_name, seed=11, n_bars=300, lag=None, down=None, ticks=None):
+def _live(monkeypatch, book_name, seed=11, n_bars=300, lag=None, down=None, ticks=None, never=()):
     own_ticks = ticks or make_ticks(n_bars, seed=seed)
     clock = {"now": 0.0}
-    feed = _Feed(own_ticks, make_ticks(n_bars, seed=seed + 100), lambda: clock["now"], lag, down)
+    feed = _Feed(own_ticks, make_ticks(n_bars, seed=seed + 100), lambda: clock["now"], lag, down, never)
     monkeypatch.setattr(data_source, "get_exchange", lambda *_args, **_kwargs: feed)
     monkeypatch.setattr(costs, "model_for", lambda _symbol: MODEL)
     monkeypatch.setattr(config(), "primary_mint_symbol", "QUOTE")
@@ -364,10 +367,13 @@ def _poll(book, strategy, clock, start_bar, end_bar, step=20):
         now += step
 
 
-def _replay(strategy, first_ts, last_ts):
-    """A backtest of the stored bars ``[first_ts, last_ts]``, reading the stored reference."""
+def _replay(strategy, first_ts, last_ts, book=None):
+    """A backtest of the stored bars ``[first_ts, last_ts]``: a replay of ``book``, or research without one."""
     frame = history.load_bars(history.source_for("TKN"), "1m")
-    entry, exit_ = backtest.compute_signals(strategy, frame, "TKN")
+    if book is None:
+        entry, exit_ = backtest.compute_signals(strategy, frame, "TKN")
+    else:
+        entry, exit_ = backtest.book_signals(strategy, frame, "TKN", book)
     sim = Book("backtest", 100.0, SimExecutor(costs.model_for), 100.0, 100.0)
     ts = frame["ts"].to_numpy()
     opens, highs, lows, closes = (frame[c].to_numpy(dtype=float) for c in ("open", "high", "low", "close"))
@@ -380,39 +386,126 @@ def _replay(strategy, first_ts, last_ts):
     return sim
 
 
-@pytest.mark.parametrize("book_name", [ledger.LIVE, "dry_run"])
-@pytest.mark.parametrize("seed", [11, 23])
-def test_live_and_replay_trade_identically_through_reference_lag_outage_and_recovery(monkeypatch, book_name, seed):
-    def lag(now):
-        return 90 if T0 + 80 * PERIOD <= now < T0 + 100 * PERIOD else 0  # 1.5 bars late for 20 bars
-
-    def down(now):
-        return T0 + 150 * PERIOD <= now < T0 + 165 * PERIOD
-
-    book, feed, clock = _live(monkeypatch, book_name, seed, lag=lag, down=down)
-    strategy = spec.compile_spec(RELATIVE)
-    for now in _poll(book, strategy, clock, 40, 299):
-        assert book.state("TKN").last_bar_ts == int(now // PERIOD) * PERIOD - PERIOD  # never held back
-    last = book.state("TKN").last_bar_ts or 0
-    marked = history.load_unavailable(history.source_for("REF"), "1m")["close"]
-    assert marked.size >= 20
-
-    # The venue recovers and the missed bars are backfilled; replays still read them as missing.
-    feed.lag, feed.down = (lambda now: 0), (lambda now: False)
-    history.update("REF", "1m", min_bars=320, now=clock["now"])
-    stored = history.load_bars(history.source_for("REF"), "1m")["ts"].to_numpy() + PERIOD
-    assert np.isin(marked, stored).all()
-    sim = _replay(strategy, T0 + 39 * PERIOD, last)
-
-    assert len(sim.trades) >= 3, "fixture should trade"
+def _same_trades(book, sim, last):
     assert [t.to_dict() for t in book.trades] == [t.to_dict() for t in sim.trades if t.exit_ts <= last]
     assert [(f.ts, f.side, f.price, f.size, f.reason) for f in book.fills] == [
         (f.ts, f.side, f.price, f.size, f.reason) for f in sim.fills if f.ts <= last
     ]
-    # The recovered bars hold values; only the record keeps the replay from reading them.
-    refs = history.load_references(("REF",), "1m")
-    assert np.isnan(refs("REF", "close", marked)).all()
-    assert np.isfinite(history.align(refs.frames["REF"], PERIOD, marked, "close")).all()
+
+
+def _book_refs(strategy, book):
+    refs = backtest.book_references(strategy, "TKN", book)
+    assert refs is not None
+    return refs
+
+
+def _marks(book, strategy):
+    return ledger.reference_marks(book, strategy.hash, "TKN").get(("REF", "close"), [])
+
+
+def _lag_and_outage(now):
+    return 90 if T0 + 80 * PERIOD <= now < T0 + 100 * PERIOD else 0  # 1.5 bars late for 20 bars
+
+
+def _outage(now):
+    return T0 + 150 * PERIOD <= now < T0 + 165 * PERIOD
+
+
+@pytest.mark.parametrize("book_name", [ledger.LIVE, "dry_run"])
+@pytest.mark.parametrize("seed", [11, 23])
+def test_a_books_replay_matches_it_through_late_reference_bars_while_research_reads_the_store(
+    monkeypatch, book_name, seed
+):
+    book, feed, clock = _live(monkeypatch, book_name, seed, lag=_lag_and_outage, down=_outage)
+    strategy = spec.compile_spec(RELATIVE)
+    for now in _poll(book, strategy, clock, 40, 299):
+        assert book.state("TKN").last_bar_ts == int(now // PERIOD) * PERIOD - PERIOD  # never held back
+    last = book.state("TKN").last_bar_ts or 0
+    marked = np.array(_marks(book_name, strategy), dtype=float)
+    assert marked.size >= 20
+
+    # The venue recovers and the late bars are backfilled.
+    feed.lag, feed.down = (lambda now: 0), (lambda now: False)
+    history.update("REF", "1m", min_bars=320, now=clock["now"])
+    stored = history.load_bars(history.source_for("REF"), "1m")["ts"].to_numpy() + PERIOD
+    assert np.isin(marked, stored).all()
+
+    replay = _replay(strategy, T0 + 39 * PERIOD, last, book_name)
+    assert len(replay.trades) >= 3, "fixture should trade"
+    _same_trades(book, replay, last)
+    # Research reads the backfilled values; only the book's own replay reads them as missing.
+    assert np.isfinite(history.load_references(("REF",), "1m")("REF", "close", marked)).all()
+    assert np.isnan(_book_refs(strategy, book_name)("REF", "close", marked)).all()
+
+
+@pytest.mark.parametrize("book_name", [ledger.LIVE, "dry_run"])
+def test_a_books_replay_matches_it_when_a_reference_bar_never_arrives(monkeypatch, book_name):
+    never = [T0 + k * PERIOD for k in (70, 71, 120)]
+    book, _, clock = _live(monkeypatch, book_name, 11, never=never)
+    strategy = spec.compile_spec(RELATIVE)
+    for _ in _poll(book, strategy, clock, 40, 299):
+        pass
+    last = book.state("TKN").last_bar_ts or 0
+    gaps = np.array(never, dtype=float) + PERIOD
+    assert set(gaps) <= set(_marks(book_name, strategy))
+
+    replay = _replay(strategy, T0 + 39 * PERIOD, last, book_name)
+    assert len(replay.trades) >= 3, "fixture should trade"
+    _same_trades(book, replay, last)
+    # The bars never arrived, so research sees them as missing values too, and trades as the book did.
+    assert np.isnan(history.load_references(("REF",), "1m")("REF", "close", gaps)).all()
+    _same_trades(book, _replay(strategy, T0 + 39 * PERIOD, last), last)
+
+
+def test_one_books_marks_never_reach_another_book_or_hash(monkeypatch):
+    book_a, feed, clock = _live(monkeypatch, "dry_run", 11, lag=_lag_and_outage, down=_outage)
+    strategy = spec.compile_spec(RELATIVE)
+    for _ in _poll(book_a, strategy, clock, 40, 299):
+        pass
+    assert _marks("dry_run", strategy)
+    feed.lag, feed.down = (lambda now: 0), (lambda now: False)
+    history.update("REF", "1m", min_bars=320, now=clock["now"])
+
+    other = spec.compile_spec({**RELATIVE, "name": "relative_other"})
+    assert other.hash != strategy.hash
+    assert _marks("dry_run", other) == [] and _marks("paper_b", strategy) == []
+    assert _book_refs(other, "dry_run").unavailable == {}
+    assert _book_refs(strategy, "paper_b").unavailable == {}
+
+    # Book B trades the same hash on the recovered store: it decides on what is stored, records no
+    # marks, and its replay is research's replay of the same bars.
+    book_b = Book("paper_b", 100.0, SimExecutor(costs.model_for), 100.0, 100.0)
+    for _ in _poll(book_b, strategy, clock, 40, 299):
+        pass
+    last = book_b.state("TKN").last_bar_ts or 0
+    assert _marks("paper_b", strategy) == []
+    research = _replay(strategy, T0 + 39 * PERIOD, last)
+    _same_trades(book_b, _replay(strategy, T0 + 39 * PERIOD, last, "paper_b"), last)
+    _same_trades(book_b, research, last)
+
+
+def test_research_on_a_separately_backfilled_store_matches_the_live_store(monkeypatch, tmp_path):
+    book, feed, clock = _live(monkeypatch, "dry_run", 23, lag=_lag_and_outage, down=_outage)
+    strategy = spec.compile_spec(RELATIVE)
+    for _ in _poll(book, strategy, clock, 40, 299):
+        pass
+    assert _marks("dry_run", strategy)
+    feed.lag, feed.down = (lambda now: 0), (lambda now: False)
+    history.update("REF", "1m", min_bars=320, now=clock["now"])
+    frame = history.load_bars(history.source_for("TKN"), "1m")
+    live_store = backtest.compute_signals(strategy, frame, "TKN")
+    live_usable = backtest.reference_usable(strategy, frame)
+
+    # A research store backfilled on its own, with no marks anywhere; the same bars read the same.
+    monkeypatch.setattr(config(), "candles_path", str(tmp_path / "research_candles.db"))
+    for symbol in ("TKN", "REF"):
+        history.update(symbol, "1m", min_bars=320, now=clock["now"])
+    fresh = history.load_bars(history.source_for("TKN"), "1m", start=int(frame["ts"].iat[0]))
+    pd.testing.assert_frame_equal(fresh, frame)
+    research_store = backtest.compute_signals(strategy, fresh, "TKN")
+    research_usable = backtest.reference_usable(strategy, fresh)
+    np.testing.assert_array_equal(np.concatenate(research_store), np.concatenate(live_store))
+    np.testing.assert_array_equal(research_usable["REF"], live_usable["REF"])
 
 
 @pytest.mark.parametrize("book_name", [ledger.LIVE, "dry_run"])
@@ -457,6 +550,8 @@ def test_an_absent_reference_blocks_entries_but_not_exits(monkeypatch, book_name
         pass
     assert book.fills == [] and book.state("TKN").pending is None
     assert "REF" in trading._reference_errors["TKN"]
+    blocked = ledger.blocked_entries(book_name, either.hash, "TKN")
+    assert blocked == [T0 + k * PERIOD for k in range(39, 44)]
 
     # An open position still gets its exit while REF is absent.
     book.state("TKN").position = Position("TKN", either.name, either.hash, 100.0, 1.0, 100.0, T0 + 40 * PERIOD)
@@ -471,13 +566,32 @@ def test_an_absent_reference_blocks_entries_but_not_exits(monkeypatch, book_name
     assert any(f.side == "buy" for f in book.fills)
     assert "TKN" not in trading._reference_errors
 
+    # A replay of this book enters nowhere it was blocked; research would have.
+    frame = history.load_bars(history.source_for("TKN"), "1m")
+    replayed, _ = backtest.book_signals(either, frame, "TKN", book_name)
+    researched, _ = backtest.compute_signals(either, frame, "TKN")
+    at = np.isin(frame["ts"].to_numpy(), blocked)
+    assert at.sum() == len(blocked) and not replayed[at].any() and researched[at].all()
+    assert ledger.blocked_entries("paper_other", either.hash, "TKN") == []
 
-def test_a_dead_reference_is_reported_and_its_bars_stay_missing(monkeypatch):
+
+def test_a_dead_reference_is_reported_and_its_bars_stay_missing_for_that_book(monkeypatch):
     book, _, clock = _live(monkeypatch, "dry_run", n_bars=80, down=lambda now: True)
+    strategy = spec.compile_spec(RELATIVE)
     clock["now"] = float(T0 + 60 * PERIOD + 1)
-    view = trading.run_symbol(book, "TKN", spec.compile_spec(RELATIVE), now=clock["now"])
+    view = trading.run_symbol(book, "TKN", strategy, now=clock["now"])
     assert view["bars"] == 1 and book.state("TKN").last_bar_ts == T0 + 59 * PERIOD
     assert np.isnan(view["values"]["fast"])
-    marked = history.load_unavailable(history.source_for("REF"), "1m")["close"]
-    assert marked[-1] == T0 + 60 * PERIOD and marked.size == RELATIVE["lookback"]
+    marked = _marks("dry_run", strategy)
+    assert marked[-1] == T0 + 60 * PERIOD and len(marked) == RELATIVE["lookback"]
     assert "REF" in trading._reference_errors["TKN"]
+
+
+def test_restarting_a_book_drops_its_marks():
+    ledger.record_reference_marks("paper_x", "h", "TKN", {("REF", "close"): [120, 180]})
+    ledger.record_blocked_entries("paper_x", "h", "TKN", [60])
+    ledger.record_reference_marks("paper_y", "h", "TKN", {("REF", "close"): [120]})
+    assert ledger.reference_marks("paper_x", "h", "TKN") == {("REF", "close"): [120, 180]}
+    ledger.delete_book("paper_x")
+    assert ledger.reference_marks("paper_x", "h", "TKN") == {} and ledger.blocked_entries("paper_x", "h", "TKN") == []
+    assert ledger.reference_marks("paper_y", "h", "TKN") == {("REF", "close"): [120]}

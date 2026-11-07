@@ -411,25 +411,6 @@ class MissingReference(ValueError):
         )
 
 
-def _unavailable_connect() -> sqlite3.Connection:
-    """The candle store with the table of reference close times the live loop decided without."""
-    conn = data_source._connect()
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS reference_series_unavailable (
-            exchange    TEXT    NOT NULL,
-            symbol      TEXT    NOT NULL,
-            timeframe   TEXT    NOT NULL,
-            series      TEXT    NOT NULL,
-            close_ts    INTEGER NOT NULL,
-            recorded_at REAL    NOT NULL,
-            PRIMARY KEY (exchange, symbol, timeframe, series, close_ts)
-        )
-        """
-    )
-    return conn
-
-
 def _bar_index(frame: pd.DataFrame, period: int, closes: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """For each close time: the row of the bar :func:`align` reads, and whether there is one."""
     flat = np.asarray(closes, dtype=float).ravel()
@@ -469,8 +450,10 @@ class References:
     """Closed bars of the symbols a strategy reads, as its ``reference`` input.
 
     Backtests, held-out periods, paper books and the live loop all read
-    reference values through :func:`align`, with the close times the live
-    loop decided without a reference bar (``unavailable``) read as missing.
+    reference values through :func:`align`. ``unavailable`` holds close
+    times one book decided without a value (see :func:`sol_trade.ledger.reference_marks`):
+    the live loop and replays of that book read them as missing. Research
+    leaves it empty and reads the candle store as it is.
     """
 
     timeframe: str
@@ -487,61 +470,33 @@ class References:
         """Symbols with no bar at all among the loaded ones."""
         return [s for s, f in self.frames.items() if f.empty]
 
-    def record_unavailable(
-        self, closes: np.ndarray, series: tuple[tuple[str, str], ...] | list[tuple[str, str]],
-        now: float | None = None,
-    ) -> dict[tuple[str, str], int]:
-        """Store every close time in ``closes`` a requested ``(symbol, column)`` has no value for.
+    def missing(
+        self, closes: np.ndarray, series: tuple[tuple[str, str], ...] | list[tuple[str, str]]
+    ) -> dict[tuple[str, str], np.ndarray]:
+        """Close times in ``closes`` a requested ``(symbol, column)`` has no value for, not yet unavailable.
 
         Only the columns a strategy reads count: a bar with a ``close`` but no
-        ``volume`` is available to a rule on ``close``. The live loop calls
-        this before it decides bars with these close times, so a value that
-        arrives later is still read as missing by every backtest, held-out
-        period and paper replay. Returns the new count per series.
+        ``volume`` is available to a rule on ``close``.
         """
-        now = time.time() if now is None else now
         period = timeframe_seconds(self.timeframe)
         closes = np.unique(np.asarray(closes, dtype=float).ravel())
-        recorded: dict[tuple[str, str], int] = {}
+        out: dict[tuple[str, str], np.ndarray] = {}
         for symbol, column in series:
             frame = self.frames[symbol]
             index, found = _bar_index(frame, period, closes)
             if found.any():
                 found &= ~np.isnan(frame[column].to_numpy(dtype=float)[index])
             known = self.unavailable.get((symbol, column), np.zeros(0))
-            missing = closes[~found & ~np.isin(closes, known)]
-            if not missing.size:
-                continue
-            source = source_for(symbol)
-            conn = _unavailable_connect()
-            try:
-                conn.executemany(
-                    "INSERT OR IGNORE INTO reference_series_unavailable VALUES (?, ?, ?, ?, ?, ?)",
-                    [(source.exchange, source.pair, self.timeframe, column, int(t), now) for t in missing],
-                )
-                conn.commit()
-            finally:
-                conn.close()
-            self.unavailable[(symbol, column)] = np.union1d(known, missing)
-            recorded[(symbol, column)] = int(missing.size)
-        return recorded
+            gone = closes[~found & ~np.isin(closes, known)]
+            if gone.size:
+                out[(symbol, column)] = gone
+        return out
 
-
-def load_unavailable(source: Source, timeframe: str) -> dict[str, np.ndarray]:
-    """Per column: close times the live loop decided without a value of ``source``, sorted."""
-    conn = _unavailable_connect()
-    try:
-        rows = conn.execute(
-            "SELECT series, close_ts FROM reference_series_unavailable "
-            "WHERE exchange = ? AND symbol = ? AND timeframe = ? ORDER BY close_ts",
-            (source.exchange, source.pair, timeframe),
-        ).fetchall()
-    finally:
-        conn.close()
-    by_column: dict[str, list[float]] = {}
-    for column, close_ts in rows:
-        by_column.setdefault(column, []).append(float(close_ts))
-    return {column: np.array(stamps) for column, stamps in by_column.items()}
+    def mark(self, marks: dict[tuple[str, str], Any]) -> None:
+        """Read these ``(symbol, column) -> close times`` as missing from now on."""
+        for key, closes in marks.items():
+            known = self.unavailable.get(key, np.zeros(0))
+            self.unavailable[key] = np.union1d(known, np.asarray(closes, dtype=float))
 
 
 def load_references(
@@ -549,16 +504,13 @@ def load_references(
     required: bool = True,
 ) -> References:
     """Stored bars of each symbol in ``[start, end)``; raises :class:`MissingReference` when one has none."""
-    frames, unavailable = {}, {}
+    frames = {}
     for symbol in symbols:
-        source = source_for(symbol)
-        frame = load_bars(source, timeframe, start, end)
+        frame = load_bars(source_for(symbol), timeframe, start, end)
         if required and frame.empty:
             raise MissingReference(symbol, timeframe)
         frames[symbol] = frame
-        for column, stamps in load_unavailable(source, timeframe).items():
-            unavailable[(symbol, column)] = stamps
-    return References(timeframe, frames, unavailable)
+    return References(timeframe, frames)
 
 
 def refresh_references(
@@ -575,7 +527,7 @@ def refresh_references(
         try:
             window(symbol, timeframe, bars, now)
         except ConnectionError as e:
-            log_general.warning(f"reference {symbol}: {e}; bars decided without it read as missing")
+            log_general.warning(f"reference {symbol}: {e}; values missing when a bar is decided stay missing for that book")
     end = int(now // period) * period
     return load_references(symbols, timeframe, start - period, end, required=False)
 
