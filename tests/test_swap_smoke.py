@@ -11,14 +11,13 @@ import pytest
 from solders.message import to_bytes_versioned
 from solders.transaction import VersionedTransaction
 
-from sol_trade import cli, jupiter, ledger, promotion, transactions, wallet
+from sol_trade import cli, jupiter, ledger, promotion, rpc, transactions, wallet
 from sol_trade.config import config
 from sol_trade.engine import Position
 from sol_trade.log import log_transaction
 from tests.test_transactions import _txn_with_wallet_as_second_signer
 
-USDC = config().primary_mint
-SOL = config().sol_mint
+SOL_PRICE = 150.0
 
 
 class _Tty(io.StringIO):
@@ -40,12 +39,21 @@ class _Response:
 
 
 class _FakeJupiter:
-    """Answers /order and /execute like Jupiter's swap API; records every request."""
+    """Answers /order and /execute like Jupiter's swap API; records every request.
 
-    def __init__(self) -> None:
+    ``executions`` holds the /execute replies to give, in order; an Exception
+    entry is raised instead, like a response lost after submission.
+    """
+
+    def __init__(self, primary: str, sol: str) -> None:
+        self.primary, self.sol = primary, sol
         self.balances: dict[str, float] = {}
         self.orders: list[dict] = []
-        self.executions: list[dict] = []
+        self.sent: list[dict] = []
+        self.replies: list = [
+            {"status": "Success", "signature": "sig1", "totalOutputAmount": "33300000"},
+            {"status": "Success", "signature": "sig2", "totalOutputAmount": "4985000"},
+        ]
         self.transaction = _txn_with_wallet_as_second_signer()
 
     async def __aenter__(self):
@@ -57,22 +65,80 @@ class _FakeJupiter:
     async def get(self, url, params, headers):
         assert url.endswith("/order")
         self.orders.append(dict(params))
-        if params["inputMint"] == USDC:  # buy leg: 5 USDC -> SOL
+        if params["inputMint"] == self.primary:  # buy leg: primary -> SOL
             payload = {"outAmount": "33333333", "gasless": True, "signatureFeeLamports": 5000,
                        "prioritizationFeeLamports": 0, "feeBps": 5, "router": "rfq"}
-        else:  # sell leg: SOL -> USDC
+        else:  # sell leg: SOL -> primary
             payload = {"outAmount": "4990000", "gasless": False, "signatureFeeLamports": 5000,
                        "prioritizationFeeLamports": 10000, "feeBps": 5, "router": "metis"}
-        leg = len(self.orders)
-        return _Response({**payload, "requestId": f"req{leg}", "inAmount": str(params["amount"]),
+        return _Response({**payload, "requestId": f"req{len(self.orders)}", "inAmount": str(params["amount"]),
                           "transaction": self.transaction})
 
     async def post(self, url, json, headers):
         assert url.endswith("/execute")
-        self.executions.append(json)
-        leg = len(self.executions)
-        filled = "33300000" if leg == 1 else "4985000"
-        return _Response({"status": "Success", "signature": f"sig{leg}", "totalOutputAmount": filled})
+        self.sent.append(json)
+        reply = self.replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return _Response(reply)
+
+
+class _RpcResponse:
+    def __init__(self, result: dict | None) -> None:
+        self.result = result
+
+    def to_json(self) -> str:
+        return json.dumps({"result": self.result})
+
+
+class _FakeRpc:
+    """A solana-py client whose get_transaction serves ``chain`` (signature -> result or None)."""
+
+    def __init__(self) -> None:
+        self.chain: dict[str, dict | None] = {}
+        self.reads: list[str] = []
+
+    async def get_transaction(self, signature, **kwargs):
+        self.reads.append(str(signature))
+        return _RpcResponse(self.chain.get(str(signature)))
+
+
+@pytest.fixture
+def mints():
+    cfg = config()
+    return {"primary": cfg.primary_mint, "sol": cfg.sol_mint, "primary_symbol": cfg.primary_mint_symbol,
+            "sol_symbol": cfg.symbol_for_mint(cfg.sol_mint)}
+
+
+def _sig(n: int) -> str:
+    """A valid base58 signature string for fake transaction ``n``."""
+    from solders.signature import Signature
+
+    return str(Signature(bytes([n]) * 64))
+
+
+def _chain_tx(mints, *, lamports: int, primary_raw: int, fee: int, payer_is_wallet: bool, err=None) -> dict:
+    """A jsonParsed getTransaction result: the wallet's SOL and primary-token deltas."""
+    wallet_key = str(config().public_address)
+    other = "11111111111111111111111111111111"
+    keys = [wallet_key, other] if payer_is_wallet else [other, wallet_key]
+    wallet_index = keys.index(wallet_key)
+    pre, post = [10**9, 10**9], [10**9, 10**9]
+    post[wallet_index] += lamports - (fee if payer_is_wallet else 0)
+    if not payer_is_wallet:
+        post[0] -= fee
+
+    def token(raw):
+        return [{"accountIndex": 2, "mint": mints["primary"], "owner": wallet_key,
+                 "uiTokenAmount": {"amount": str(raw), "decimals": 6}}]
+
+    return {
+        "slot": 1,
+        "meta": {"err": err, "fee": fee, "preBalances": pre, "postBalances": post,
+                 "preTokenBalances": token(20_000_000), "postTokenBalances": token(20_000_000 + primary_raw)},
+        "transaction": {"signatures": ["a", "b"] if not payer_is_wallet else ["a"],
+                        "message": {"accountKeys": [{"pubkey": k} for k in keys]}},
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -81,15 +147,34 @@ def _no_log_files(monkeypatch):
 
 
 @pytest.fixture
-def jup(monkeypatch):
-    fake = _FakeJupiter()
+def chain(monkeypatch):
+    """Route config().client through the real budgeted proxy to a fake solana-py client."""
+    fake = _FakeRpc()
+    monkeypatch.setattr(config(), "_client", rpc.BudgetedClient("http://fake", factory=lambda _url: fake))
+    monkeypatch.setattr(rpc, "_bucket", rpc.TokenBucket(1_000_000.0))
+    monkeypatch.setitem(config().rpc, "max_cu_per_second", 1_000_000)  # still metered, just no waiting
+    monkeypatch.setattr(transactions.time, "sleep", lambda _s: None)
+    return fake
+
+
+@pytest.fixture
+def jup(monkeypatch, mints, chain):
+    fake = _FakeJupiter(mints["primary"], mints["sol"])
+    fake.replies = [
+        {"status": "Success", "signature": _sig(1), "totalOutputAmount": "33300000"},
+        {"status": "Success", "signature": _sig(2), "totalOutputAmount": "4985000"},
+    ]
+    # On chain the buy delivered 0.0333 SOL (gasless) and the sell 4.985 primary, paying a 15,000-lamport fee.
+    chain.chain[_sig(1)] = _chain_tx(mints, lamports=33_300_000, primary_raw=-5_000_000, fee=10_000,
+                                     payer_is_wallet=False)
+    chain.chain[_sig(2)] = _chain_tx(mints, lamports=-33_300_000, primary_raw=4_985_000, fee=15_000,
+                                     payer_is_wallet=True)
     monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: fake)
-    monkeypatch.setattr(transactions, "decimals", lambda mint: 9 if mint == SOL else 6)
-    monkeypatch.setattr(jupiter, "fetch_prices", lambda mints, **_: {USDC: 1.0, SOL: 150.0})
-    balances = fake.balances
-    balances.update({USDC: 20.0, SOL: 0.5})
-    monkeypatch.setattr(wallet, "find_balance", lambda mint: balances[mint])
-    monkeypatch.setattr(transactions, "find_balance", lambda mint: balances[mint])
+    monkeypatch.setattr(transactions, "decimals", lambda mint: 9 if mint == mints["sol"] else 6)
+    monkeypatch.setattr(jupiter, "fetch_prices", lambda ms, **_: {mints["primary"]: 1.0, mints["sol"]: SOL_PRICE})
+    fake.balances.update({mints["primary"]: 20.0, mints["sol"]: 0.5})
+    monkeypatch.setattr(wallet, "find_balance", lambda mint: fake.balances[mint])
+    monkeypatch.setattr(transactions, "find_balance", lambda mint: fake.balances[mint])
     monkeypatch.setattr(wallet, "minimum_sol_needed", lambda: 0.004)
     return fake
 
@@ -110,11 +195,14 @@ def _run(*argv):
     return code, json.loads(lines[0])
 
 
+# ------------------------------------------------------------------- guards
+
+
 def test_needs_a_terminal(jup, monkeypatch):
     monkeypatch.setattr("sys.stdin", io.StringIO("yes\n"))
     code, payload = _run()
     assert code == 1 and payload["error"] == "tty_required"
-    assert jup.orders == [] and jup.executions == []
+    assert jup.orders == [] and jup.sent == []
 
 
 @pytest.mark.parametrize("usd", ["10.01", "50"])
@@ -138,24 +226,24 @@ def test_refuses_while_the_kill_switch_is_on(jup, answer):
 
 
 @pytest.mark.parametrize("book", [ledger.LIVE, ledger.DRY_RUN])
-def test_refuses_while_the_bot_holds_a_position(jup, answer, monkeypatch, book):
-    position = Position("SOL", "default", "h", 150.0, 0.1, 15.0, 0)
+def test_refuses_while_the_bot_holds_a_position(jup, answer, monkeypatch, mints, book):
+    position = Position(mints["sol_symbol"], "default", "h", SOL_PRICE, 0.1, 15.0, 0)
     monkeypatch.setattr(ledger, "open_positions", lambda name=None: [(book, position)])
     code, payload = _run()
     assert code == 1 and payload["error"] == "open_positions"
-    assert payload["details"] == [{"book": book, "symbol": "SOL", "size": 0.1}]
+    assert payload["details"] == [{"book": book, "symbol": mints["sol_symbol"], "size": 0.1}]
     assert jup.orders == []
 
 
-def test_refuses_without_enough_primary(jup, answer):
-    jup.balances[USDC] = 4.99
+def test_refuses_without_enough_primary(jup, answer, mints):
+    jup.balances[mints["primary"]] = 4.99
     code, payload = _run()
     assert code == 1 and payload["error"] == "insufficient_funds"
     assert jup.orders == []
 
 
-def test_refuses_below_the_sol_reserve(jup, answer):
-    jup.balances[SOL] = 0.0  # find_balance reports 0 below minimum_sol_needed
+def test_refuses_below_the_sol_reserve(jup, answer, mints):
+    jup.balances[mints["sol"]] = 0.0  # find_balance reports 0 below minimum_sol_needed
     code, payload = _run()
     assert code == 1 and payload["error"] == "insufficient_sol"
     assert jup.orders == []
@@ -166,16 +254,19 @@ def test_sends_nothing_without_a_typed_yes(jup, answer, text):
     answer(text)
     code, payload = _run()
     assert code == 1 and payload["error"] == "not_confirmed"
-    assert jup.orders == [] and jup.executions == []
+    assert jup.orders == [] and jup.sent == []
 
 
-def test_round_trip_goes_through_the_live_swap_path(jup, answer, monkeypatch):
+# ------------------------------------------------------------- round trip
+
+
+def test_round_trip_goes_through_the_live_swap_path(jup, answer, chain, monkeypatch, mints):
     sent = []
     real_perform_swap = transactions.perform_swap
 
-    async def spy(*args):
+    async def spy(*args, **kwargs):
         sent.append(args)
-        return await real_perform_swap(*args)
+        return await real_perform_swap(*args, **kwargs)
 
     monkeypatch.setattr(transactions, "perform_swap", spy)
     records = []
@@ -188,39 +279,179 @@ def test_round_trip_goes_through_the_live_swap_path(jup, answer, monkeypatch):
         log_transaction.removeHandler(handler)
 
     assert code == 0 and payload["ok"], payload
-    # Buy 5 USDC of SOL, then sell exactly the SOL that arrived.
-    assert sent == [(5.0, USDC, SOL, "USDC", "SOL"), (0.0333, SOL, USDC, "SOL", "USDC")]
-    assert [o["inputMint"] for o in jup.orders] == [USDC, SOL]
-    assert jup.orders[0]["amount"] == 5_000_000
-    assert jup.orders[1]["amount"] == int(0.0333 * 10**9)
+    primary, sol, p_sym, s_sym = mints["primary"], mints["sol"], mints["primary_symbol"], mints["sol_symbol"]
+    # Buy 5 primary of SOL, then sell exactly the SOL the chain says arrived.
+    assert sent == [(5.0, primary, sol, p_sym, s_sym), (pytest.approx(0.0333), sol, primary, s_sym, p_sym)]
+    assert [o["inputMint"] for o in jup.orders] == [primary, sol]
+    assert jup.orders[1]["amount"] == 33_300_000
     assert all(o["taker"] == str(config().public_address) for o in jup.orders)
-    # Both legs were signed by the wallet and sent to /execute.
-    assert [e["requestId"] for e in jup.executions] == ["req1", "req2"]
-    for execution in jup.executions:
+    # Both legs were signed by the wallet, sent to /execute, and read back through config().client.
+    assert [e["requestId"] for e in jup.sent] == ["req1", "req2"]
+    for execution in jup.sent:
         txn = VersionedTransaction.from_bytes(base64.b64decode(execution["signedTransaction"]))
         assert txn.signatures[1].verify(config().public_address, to_bytes_versioned(txn.message))
+    assert chain.reads == [_sig(1), _sig(2)]
 
     buy, sell = payload["buy"], payload["sell"]
-    assert (buy["signature"], sell["signature"]) == ("sig1", "sig2")
+    assert (buy["outcome"], sell["outcome"]) == ("confirmed", "confirmed")
+    assert (buy["signature"], sell["signature"]) == (_sig(1), _sig(2))
+    assert buy["filled_from"] == sell["filled_from"] == "chain"
     assert buy["quoted_out"] == pytest.approx(0.033333333) and buy["filled_out"] == pytest.approx(0.0333)
     assert buy["slippage_bps"] == pytest.approx((33333333 - 33300000) / 33333333 * 1e4)
     assert sell["quoted_out"] == pytest.approx(4.99) and sell["filled_out"] == pytest.approx(4.985)
-    assert sell["slippage_bps"] == pytest.approx((4.99 - 4.985) / 4.99 * 1e4)
-    assert buy["fees"]["network_fee_usd"] == 0.0  # gasless: Jupiter pays
-    assert sell["fees"]["prioritization_fee_lamports"] == 10000
-    assert sell["fees"]["network_fee_usd"] == pytest.approx(15000 / 1e9 * 150)
+    # Gasless buy: Jupiter paid. Sell: the wallet paid 15,000 lamports, 10,000 of it priority.
+    assert buy["fees"]["charged_lamports"] == 0 and buy["fees"]["complete"]
+    assert sell["fees"]["charged_lamports"] == 15_000
+    assert sell["fees"]["charged_priority_lamports"] == 10_000
+    assert sell["fees"]["estimated"]["prioritization_fee_lamports"] == 10_000
     trip = payload["round_trip"]
-    assert trip["cost_usd"] == pytest.approx(5 - 4.985 + 0.00225)
-    assert trip["cost_bps"] == pytest.approx((5 - 4.985 + 0.00225) / 5 * 1e4)
-    # No measured costs here: the default model charges default_cost_bps per side.
+    fees_usd = 15_000 / 1e9 * SOL_PRICE
+    assert trip["status"] == "realized"
+    assert trip["network_fees_usd"] == pytest.approx(fees_usd)
+    assert trip["cost_usd"] == pytest.approx(5 - 4.985 + fees_usd)
+    assert trip["cost_bps"] == pytest.approx((5 - 4.985 + fees_usd) / 5 * 1e4)
     model = payload["model"]
     assert model["source"] == "default"
     assert model["round_trip_bps"] == pytest.approx(2 * config().costs["default_cost_bps"])
     assert model["actual_minus_model_bps"] == pytest.approx(trip["cost_bps"] - model["round_trip_bps"])
     # Both swaps reach the transaction log, as the bot's own swaps do.
-    assert any("SolTrade TxID: sig1" in r for r in records)
-    assert any("SolTrade TxID: sig2" in r for r in records)
+    assert any(f"SolTrade TxID: {_sig(1)}" in r for r in records)
+    assert any(f"SolTrade TxID: {_sig(2)}" in r for r in records)
     assert any(r.startswith("swap-smoke: round trip cost") for r in records)
+
+
+def test_sells_the_chain_receipt_not_the_quote(jup, answer, chain, mints):
+    # Jupiter reported 0.0333 SOL, the chain shows 0.0321 arrived: sell what arrived.
+    chain.chain[_sig(1)] = _chain_tx(mints, lamports=32_100_000, primary_raw=-5_000_000, fee=10_000,
+                                     payer_is_wallet=False)
+    code, payload = _run()
+    assert code == 0, payload
+    assert 32_099_999 <= jup.orders[1]["amount"] <= 32_100_000  # create_order truncates; never more
+    assert payload["buy"]["filled_out"] == pytest.approx(0.0321)
+    assert payload["buy"]["slippage_bps"] > 300
+
+
+def test_falls_back_to_jupiters_reported_fill_and_marks_fees_unknown(jup, answer, chain, mints):
+    del chain.chain[_sig(1)]  # the RPC never returns the buy
+    code, payload = _run()
+    assert code == 0, payload
+    buy = payload["buy"]
+    assert buy["filled_from"] == "jupiter_execute" and buy["filled_out"] == pytest.approx(0.0333)
+    assert buy["fees"]["complete"] is False and buy["fees"]["charged_lamports"] is None
+    assert payload["round_trip"]["status"] == "fees_incomplete"
+
+
+def test_lost_buy_response_sends_no_sell(jup, answer, mints):
+    jup.replies = [httpx.ReadTimeout("lost"), httpx.ReadTimeout("lost"), httpx.ReadTimeout("lost")]
+    code, payload = _run()
+    assert code == 1 and payload["error"] == "buy_unresolved"
+    assert [o["inputMint"] for o in jup.orders] == [mints["primary"]] * 3  # no sell order
+    buy = payload["details"][0]["buy"]
+    assert buy["outcome"] == "unresolved" and buy["filled_out"] is None
+    assert [a["status"] for a in buy["attempts"]] == ["unknown"] * 3
+    assert buy["fees"]["unknown_attempts"] == ["req1", "req2", "req3"]
+
+
+def test_lost_response_with_moved_balance_is_not_sold_from_the_quote(jup, answer, monkeypatch, mints):
+    # perform_swap treats this as executed (the balance dropped) and reports the quote; swap-smoke must not.
+    jup.replies = [httpx.ReadTimeout("lost")]
+    moves = iter([20.0, 15.0])
+    monkeypatch.setattr(transactions, "find_balance", lambda mint: next(moves))
+    code, payload = _run()
+    assert code == 1 and payload["error"] == "buy_unresolved"
+    assert len(jup.orders) == 1
+    assert payload["details"][0]["buy"]["attempts"][0]["balance_moved"] is True
+
+
+def test_success_without_an_amount_or_receipt_sends_no_sell(jup, answer, chain, mints):
+    jup.replies[0] = {"status": "Success", "signature": _sig(1)}
+    del chain.chain[_sig(1)]
+    code, payload = _run()
+    assert code == 1 and payload["error"] == "buy_unresolved"
+    assert len(jup.orders) == 1
+
+
+def test_retried_buy_counts_the_fee_of_the_failed_attempt(jup, answer, chain, mints):
+    # The first buy landed on chain but failed, charging the wallet 5,000 lamports.
+    chain.chain[_sig(9)] = _chain_tx(mints, lamports=0, primary_raw=0, fee=5_000, payer_is_wallet=True,
+                                     err={"InstructionError": [0, "SlippageToleranceExceeded"]})
+    jup.replies.insert(0, {"status": "Failed", "signature": _sig(9), "error": "slippage"})
+    code, payload = _run()
+    assert code == 0, payload
+    buy = payload["buy"]
+    assert [a["status"] for a in buy["attempts"]] == ["failed", "executed"]
+    assert buy["signature"] == _sig(1)
+    assert buy["fees"]["charged_lamports"] == 5_000
+    assert payload["round_trip"]["network_fees_usd"] == pytest.approx(20_000 / 1e9 * SOL_PRICE)
+
+
+def test_failed_attempt_that_landed_anyway_is_unresolved(jup, answer, chain, mints):
+    chain.chain[_sig(9)] = _chain_tx(mints, lamports=33_300_000, primary_raw=-5_000_000, fee=5_000,
+                                     payer_is_wallet=True)
+    jup.replies.insert(0, {"status": "Failed", "signature": _sig(9), "error": "timeout"})
+    code, payload = _run()
+    assert code == 1 and payload["error"] == "buy_unresolved"
+
+
+def test_failed_buy_sends_no_sell(jup, answer, mints):
+    jup.replies = [{"status": "Failed", "error": "no liquidity"}] * 3
+    code, payload = _run()
+    assert code == 1 and payload["error"] == "buy_failed"
+    assert [o["inputMint"] for o in jup.orders] == [mints["primary"]] * 3
+
+
+def test_failed_sell_keeps_the_buy_evidence(jup, answer, mints):
+    jup.replies[1:] = [{"status": "Failed", "error": "no liquidity"}] * 3
+    code, payload = _run()
+    assert code == 1 and payload["error"] == "sell_failed"
+    legs = payload["details"][0]
+    assert legs["buy"]["signature"] == _sig(1) and legs["buy"]["filled_out"] == pytest.approx(0.0333)
+    assert legs["sell"]["outcome"] == "failed"
+    assert "holds the 0.0333" in payload["message"]
+
+
+def test_lost_sell_response_is_unresolved_not_held(jup, answer, mints):
+    jup.replies[1:] = [httpx.ReadTimeout("lost")] * 3
+    code, payload = _run()
+    assert code == 1 and payload["error"] == "sell_unresolved"
+    assert "holds" not in payload["message"]
+    legs = payload["details"][0]
+    assert legs["buy"]["outcome"] == "confirmed"
+    assert [a["status"] for a in legs["sell"]["attempts"]] == ["unknown"] * 3
+
+
+def test_sell_exception_keeps_both_legs(jup, answer, monkeypatch):
+    real_perform_swap = transactions.perform_swap
+    calls = []
+
+    async def boom_on_sell(*args, **kwargs):
+        calls.append(args)
+        if len(calls) == 2:
+            kwargs["attempts"].append({"status": "unknown", "request_id": "reqX", "order": None, "signature": None,
+                                       "total_output_amount": None, "error": None, "balance_moved": False})
+            raise RuntimeError("decimals lookup failed")
+        return await real_perform_swap(*args, **kwargs)
+
+    monkeypatch.setattr(transactions, "perform_swap", boom_on_sell)
+    code, payload = _run()
+    assert code == 1 and payload["error"] == "sell_unresolved"
+    legs = payload["details"][0]
+    assert legs["buy"]["signature"] == _sig(1)
+    assert legs["sell"]["error"] == "RuntimeError: decimals lookup failed"
+    assert legs["sell"]["attempts"][0]["request_id"] == "reqX"
+
+
+def test_report_failure_says_not_to_run_again(jup, answer, monkeypatch):
+    def broken(*args, **kwargs):
+        raise KeyError("points")
+
+    monkeypatch.setattr(cli.costs, "model_for", broken)
+    code, payload = _run()
+    assert code == 1 and payload["error"] == "report_failed"
+    assert "Do not run swap-smoke again" in payload["message"]
+    legs = payload["details"][0]
+    assert (legs["buy"]["signature"], legs["sell"]["signature"]) == (_sig(1), _sig(2))
+    assert len(jup.sent) == 2
 
 
 def test_leaves_books_promotion_and_config_alone(jup, answer):
@@ -232,15 +463,3 @@ def test_leaves_books_promotion_and_config_alone(jup, answer):
     assert (ledger.open_positions(), ledger.fills(ledger.LIVE), ledger.fills(ledger.DRY_RUN),
             promotion.paused()) == before
     assert config_file.read_text() == config_text
-
-
-def test_failed_buy_sends_no_sell(jup, answer, monkeypatch):
-    calls = []
-
-    async def failing(*args):
-        calls.append(args)
-
-    monkeypatch.setattr(transactions, "perform_swap", failing)
-    code, payload = _run()
-    assert code == 1 and payload["error"] == "buy_failed"
-    assert len(calls) == 1

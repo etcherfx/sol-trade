@@ -460,7 +460,7 @@ Every strategy variant counts: the deflated Sharpe ratio corrects for the number
 | `approve <strategy> <symbol>` | Lets paper → live proceed when `require_approval` is on (interactive terminal only) |
 | `reopen <strategy> <symbol>` | Re-opens a hash rejected by the old fixed held-out trade minimum, once, after replaying its stored held-out period under the current rule (interactive terminal only) |
 | `resume` | Clears the kill switch (interactive terminal only) |
-| `swap-smoke [--usd 5]` | Sends two **real** swaps: buys `--usd` worth of SOL with the primary token, then sells exactly the SOL received back. Reports both signatures, quoted vs filled amounts, slippage against the quote, network and priority fees, and the round-trip cost next to the cost model's estimate for that size. At most 10 USD. Refuses (`paused`, `open_positions`, `insufficient_funds`, `insufficient_sol`, `over_cap`) when the kill switch is on, the live or dry-run book holds a position, or the wallet lacks the primary amount or the SOL fee reserve. Never touches `config.json`, the books or the pipeline (interactive terminal only, typed `yes`) |
+| `swap-smoke [--usd 5]` | Sends two **real** swaps: buys `--usd` worth of SOL with the primary token, then sells exactly the SOL the chain shows arrived. Per leg (`buy`, `sell`): `outcome`, the signature, quoted vs filled amounts (`filled_from` is `chain` or `jupiter_execute`, never the quote), slippage against the quote, the fees the wallet was charged next to Jupiter's estimate, and every attempt. Then `round_trip` (cost in USD and bps; `status` is `realized`, or `fees_incomplete` when an attempt's fee could not be read) and `model`, the cost model's estimate for that size. At most 10 USD. Refuses (`paused`, `open_positions`, `insufficient_funds`, `insufficient_sol`, `over_cap`) when the kill switch is on, the live or dry-run book holds a position, or the wallet lacks the primary amount or the SOL fee reserve. After sending it fails with the legs so far in `details`: `buy_failed` or `sell_failed` when no attempt swapped, `buy_unresolved` or `sell_unresolved` when one may have landed (no sell follows an unresolved buy), `report_failed` when both swaps landed but the report could not be built. Never touches `config.json`, the books or the pipeline (interactive terminal only, typed `yes`) |
 
 ### Before going live
 
@@ -471,7 +471,7 @@ uv run -m sol_trade.cli swap-smoke --usd 5
 docker compose exec soltrade python -m sol_trade.cli swap-smoke --usd 5   # in the container (needs the key in .env)
 ```
 
-It costs the round trip's spread and fees, typically a few cents. Both swaps go to `logs/transaction.log`. If `cost_bps` is far above `model.round_trip_bps`, run `measure-costs` before trusting backtests.
+It costs the round trip's spread and fees, typically a few cents. Both swaps go to `logs/transaction.log`. If `cost_bps` is far above `model.round_trip_bps`, run `measure-costs` before trusting backtests. On an `*_unresolved` or `report_failed` error, check the wallet and the signatures in `details` before running it again.
 
 ## FAQ
 

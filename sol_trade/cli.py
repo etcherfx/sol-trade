@@ -413,31 +413,147 @@ def cmd_resume(args: argparse.Namespace) -> dict[str, Any]:
         raise _refused(e) from e
 
 
-def _smoke_leg(result: dict[str, Any], sent_symbol: str, out_symbol: str, sol_usd: float) -> dict[str, Any]:
-    """One swap's audit: quoted vs filled, slippage against the quote, fees."""
-    order = result.get("order") or {}
-    quoted, filled = float(result.get("quoted_out_amount") or 0), float(result["out_amount"])
-    signature_fee = int(order.get("signatureFeeLamports") or 0)
-    priority_fee = int(order.get("prioritizationFeeLamports") or 0)
-    gasless = bool(order.get("gasless"))
+def _smoke_leg(side: str, amount: float, in_mint: str, out_mint: str, sol_usd: float) -> dict[str, Any]:
+    """Send one swap through the live path and reconcile what it did from the chain.
+
+    Never raises once the swap is sent: errors land in the leg. ``outcome`` is
+    ``confirmed`` (the received amount is known from the chain or Jupiter's
+    execute report), ``failed`` (every attempt is known not to have swapped)
+    or ``unresolved`` (an attempt may have landed; check the wallet).
+    """
+    cfg = config()
+    in_symbol, out_symbol = cfg.symbol_for_mint(in_mint) or in_mint, cfg.symbol_for_mint(out_mint) or out_mint
+    attempts: list[dict[str, Any]] = []
+    leg: dict[str, Any] = {
+        "side": side, "outcome": "unresolved", "sent": amount, "sent_symbol": in_symbol, "out_symbol": out_symbol,
+        "signature": None, "quoted_out": None, "filled_out": None, "filled_from": None, "slippage_bps": None,
+        "fees": None, "attempts": attempts, "error": None,
+    }
+    try:
+        transactions_result = asyncio.run(
+            transactions.perform_swap(amount, in_mint, out_mint, in_symbol, out_symbol, attempts=attempts)
+        )
+    except Exception as e:  # noqa: BLE001 - the leg reports it
+        transactions_result = None
+        leg["error"] = f"{type(e).__name__}: {e}"
+    try:
+        _reconcile_leg(leg, transactions_result, in_mint, out_mint, sol_usd)
+    except Exception as e:  # noqa: BLE001 - keep the attempts; the outcome stays unresolved
+        log_general.exception(f"swap-smoke: reconciling the {side} failed")
+        leg["outcome"] = "unresolved"
+        leg["error"] = leg["error"] or f"{type(e).__name__}: {e}"
+    return leg
+
+
+def _reconcile_leg(leg: dict[str, Any], result: dict[str, Any] | None, in_mint: str, out_mint: str,
+                   sol_usd: float) -> None:
+    attempts = leg["attempts"]
+    for attempt in attempts:
+        if attempt["signature"]:
+            attempt["receipt"] = transactions.transaction_receipt(attempt["signature"], [in_mint, out_mint])
+
+    # Fees the wallet was charged; unknown wherever an attempt may have landed unseen.
+    charged = priority = 0
+    unknown = []
+    for attempt in attempts:
+        if attempt["status"] == "no_order":
+            continue
+        receipt = attempt.get("receipt")
+        if receipt is None:
+            unknown.append(attempt["request_id"] or attempt["signature"])
+            continue
+        charged += receipt["wallet_fee_lamports"]
+        priority += receipt["wallet_priority_fee_lamports"]
+    executed = [a for a in attempts if a["status"] == "executed"]
+    final = executed[-1] if executed else None
+    estimate = (final or (attempts[-1] if attempts else {})).get("order") or {}
+    leg["fees"] = {
+        "complete": not unknown,
+        "charged_lamports": charged if not unknown else None,
+        "charged_priority_lamports": priority if not unknown else None,
+        "charged_usd": charged / _LAMPORTS_PER_SOL * sol_usd if not unknown else None,
+        "known_charged_lamports": charged,
+        "unknown_attempts": unknown,
+        "estimated": {
+            "gasless": bool(estimate.get("gasless")),
+            "signature_fee_lamports": int(estimate.get("signatureFeeLamports") or 0),
+            "prioritization_fee_lamports": int(estimate.get("prioritizationFeeLamports") or 0),
+            "rent_fee_lamports": int(estimate.get("rentFeeLamports") or 0),
+        },
+    }
+
+    def landed(attempt: dict[str, Any]) -> bool:
+        receipt = attempt.get("receipt")
+        return receipt is not None and receipt["err"] is None
+
+    maybe_landed = [
+        a for a in attempts
+        if a["status"] == "unknown" or a["balance_moved"] or (a["status"] == "failed" and landed(a))
+    ]
+    if final is None or maybe_landed:
+        no_swap = not executed and not maybe_landed and result is None and leg["error"] is None
+        leg["outcome"] = "failed" if no_swap else "unresolved"
+        return
+
+    out_decimals = 10 ** transactions.decimals(out_mint)
+    receipt = final.get("receipt")
+    if receipt is not None and receipt["err"] is not None:
+        leg["outcome"] = "unresolved"  # Jupiter said Success, the chain says it failed
+        return
+    if receipt is not None:
+        filled, source = receipt["change"][out_mint], "chain"
+    elif final["total_output_amount"]:
+        filled, source = int(final["total_output_amount"]) / out_decimals, "jupiter_execute"
+    else:
+        leg["outcome"] = "unresolved"  # landed, but no actual amount: never use the quote
+        return
+    if filled <= 0:
+        leg["outcome"] = "unresolved"
+        return
+    order = final.get("order") or {}
+    quoted = int(order.get("outAmount") or 0) / out_decimals
+    leg.update(
+        outcome="confirmed",
+        signature=final["signature"],
+        request_id=final["request_id"],
+        quoted_out=quoted or None,
+        filled_out=filled,
+        filled_from=source,
+        slippage_bps=(quoted - filled) / quoted * 1e4 if quoted > 0 else None,
+        jupiter_fee_bps=order.get("feeBps"),
+        router=order.get("router"),
+    )
+
+
+def _round_trip(amount: float, primary_usd: float, sol_usd: float, buy: dict[str, Any], sell: dict[str, Any],
+                symbol: str) -> dict[str, Any]:
+    spent_usd = amount * primary_usd
+    back_usd = float(sell["filled_out"]) * primary_usd
+    fees_complete = buy["fees"]["complete"] and sell["fees"]["complete"]
+    known_fees_usd = sum(leg["fees"]["known_charged_lamports"] for leg in (buy, sell)) / _LAMPORTS_PER_SOL * sol_usd
+    cost_usd = spent_usd - back_usd + known_fees_usd
+    cost_bps = cost_usd / spent_usd * 1e4
+    model = costs.model_for(symbol)
+    model_usd = 2 * model.cost_usd(spent_usd)  # one buy and one sell of the same size
+    model_bps = model_usd / spent_usd * 1e4
     return {
-        "signature": result.get("signature"),
-        "request_id": order.get("requestId"),
-        "sent": result["sent_amount"],
-        "sent_symbol": sent_symbol,
-        "quoted_out": quoted,
-        "filled_out": filled,
-        "out_symbol": out_symbol,
-        "slippage_bps": (quoted - filled) / quoted * 1e4 if quoted > 0 else None,
-        "jupiter_fee_bps": order.get("feeBps"),
-        "router": order.get("router"),
-        "fees": {
-            "gasless": gasless,
-            "signature_fee_lamports": signature_fee,
-            "prioritization_fee_lamports": priority_fee,
-            "rent_fee_lamports": int(order.get("rentFeeLamports") or 0),
-            # Gasless orders are paid by Jupiter, as in the cost model's probes.
-            "network_fee_usd": 0.0 if gasless else (signature_fee + priority_fee) / _LAMPORTS_PER_SOL * sol_usd,
+        "round_trip": {
+            # realized: every fee the wallet paid is known. Otherwise the cost
+            # leaves out the fees of attempts that could not be read.
+            "status": "realized" if fees_complete else "fees_incomplete",
+            "spent_usd": spent_usd,
+            "returned_usd": back_usd,
+            "network_fees_usd": known_fees_usd,
+            "cost_usd": cost_usd,
+            "cost_bps": cost_bps,
+        },
+        "model": {
+            "source": model.source,
+            "measured_at": model.measured_at,
+            "per_side_bps": model.bps(spent_usd),
+            "round_trip_usd": model_usd,
+            "round_trip_bps": model_bps,
+            "actual_minus_model_bps": cost_bps - model_bps,
         },
     }
 
@@ -500,50 +616,63 @@ def cmd_swap_smoke(args: argparse.Namespace) -> dict[str, Any]:
     ]):
         raise CliError("not_confirmed", "nothing was sent: the answer was not yes")
 
-    log_transaction.info(f"swap-smoke: buying {sol} with {amount:g} {primary} (human-supervised plumbing check)")
-    buy = asyncio.run(transactions.perform_swap(amount, cfg.primary_mint, cfg.sol_mint, primary, sol))
-    if not buy or float(buy["out_amount"]) <= 0:
-        raise CliError("buy_failed", "the buy did not complete; nothing else was sent")
-    buy_leg = _smoke_leg(buy, primary, sol, sol_usd)
-    log_transaction.info(f"swap-smoke: selling {buy['out_amount']:g} {sol} back to {primary}")
-    sell = asyncio.run(transactions.perform_swap(float(buy["out_amount"]), cfg.sol_mint, cfg.primary_mint, sol, primary))
-    if not sell:
-        raise CliError("sell_failed", f"the sell did not complete; the wallet keeps the {buy['out_amount']:g} {sol} bought",
-                       [{"buy": buy_leg}])
-    sell_leg = _smoke_leg(sell, sol, primary, sol_usd)
+    legs: dict[str, Any] = {}
+    try:
+        log_transaction.info(f"swap-smoke: buying {sol} with {amount:g} {primary} (human-supervised plumbing check)")
+        buy = legs["buy"] = _smoke_leg("buy", amount, cfg.primary_mint, cfg.sol_mint, sol_usd)
+        if buy["outcome"] == "failed":
+            raise CliError("buy_failed", "every buy attempt failed before swapping; nothing else was sent", [legs])
+        if buy["outcome"] != "confirmed":
+            raise CliError(
+                "buy_unresolved",
+                "the buy may have landed, but what the wallet received could not be confirmed, so no sell was "
+                "sent. Check the wallet and the attempts in details before running swap-smoke again",
+                [legs],
+            )
+        log_transaction.info(f"swap-smoke: selling {buy['filled_out']:g} {sol} back to {primary}")
+        sell = legs["sell"] = _smoke_leg("sell", float(buy["filled_out"]), cfg.sol_mint, cfg.primary_mint, sol_usd)
+        if sell["outcome"] == "failed":
+            raise CliError(
+                "sell_failed",
+                f"the buy landed ({buy['signature']}) and every sell attempt failed before swapping; "
+                f"the wallet holds the {buy['filled_out']:g} {sol} bought",
+                [legs],
+            )
+        if sell["outcome"] != "confirmed":
+            raise CliError(
+                "sell_unresolved",
+                f"the buy landed ({buy['signature']}), but the sell's result could not be confirmed. Check the "
+                f"wallet for the {buy['filled_out']:g} {sol} and the attempts in details before running again",
+                [legs],
+            )
+    except CliError as e:
+        log_transaction.error(f"swap-smoke: {e.code}: {e.message}")
+        raise
+    except Exception as e:  # anything after the yes keeps the legs sent so far
+        log_general.exception("swap-smoke failed after the yes")
+        raise CliError(
+            "interrupted",
+            f"swap-smoke stopped after sending: {type(e).__name__}: {e}. Check the wallet and the legs in details "
+            "before running again",
+            [legs],
+        ) from e
 
-    spent_usd = amount * primary_usd
-    back_usd = float(sell["out_amount"]) * primary_usd
-    fees_usd = buy_leg["fees"]["network_fee_usd"] + sell_leg["fees"]["network_fee_usd"]
-    cost_usd = spent_usd - back_usd + fees_usd
-    model = costs.model_for(sol)
-    model_usd = 2 * model.cost_usd(spent_usd)  # one buy and one sell of the same size
-    cost_bps = cost_usd / spent_usd * 1e4
-    model_bps = model_usd / spent_usd * 1e4
+    try:
+        report = _round_trip(amount, primary_usd, sol_usd, buy, sell, sol)
+    except Exception as e:  # both swaps landed; never invite a second round trip
+        log_general.exception("swap-smoke: building the report failed")
+        raise CliError(
+            "report_failed",
+            f"both swaps landed ({buy['signature']}, {sell['signature']}), but building the report failed: "
+            f"{type(e).__name__}: {e}. Do not run swap-smoke again",
+            [legs],
+        ) from e
+    trip = report["round_trip"]
     log_transaction.info(
-        f"swap-smoke: round trip cost {cost_usd:.4f} USD ({cost_bps:.1f} bps); model {model_bps:.1f} bps"
+        f"swap-smoke: round trip cost {trip['cost_usd']:.4f} USD ({trip['cost_bps']:.1f} bps, {trip['status']}); "
+        f"model {report['model']['round_trip_bps']:.1f} bps"
     )
-    return {
-        "usd": usd,
-        "prices_usd": {primary: primary_usd, sol: sol_usd},
-        "buy": buy_leg,
-        "sell": sell_leg,
-        "round_trip": {
-            "spent_usd": spent_usd,
-            "returned_usd": back_usd,
-            "network_fees_usd": fees_usd,
-            "cost_usd": cost_usd,
-            "cost_bps": cost_bps,
-        },
-        "model": {
-            "source": model.source,
-            "measured_at": model.measured_at,
-            "per_side_bps": model.bps(spent_usd),
-            "round_trip_usd": model_usd,
-            "round_trip_bps": model_bps,
-            "actual_minus_model_bps": cost_bps - model_bps,
-        },
-    }
+    return {"usd": usd, "prices_usd": {primary: primary_usd, sol: sol_usd}, "buy": buy, "sell": sell, **report}
 
 
 def build_parser() -> argparse.ArgumentParser:

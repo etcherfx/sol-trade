@@ -175,15 +175,20 @@ def test_perform_swap_treats_lost_execute_as_success_when_balance_moved(monkeypa
     balances = iter([2.0, 0.5])
     monkeypatch.setattr(transactions, "_input_balance", lambda mint: next(balances))
 
+    attempts = []
     result = asyncio.run(
-        transactions.perform_swap(1.0, "SOL_MINT", "USDC_MINT", "SOL", "USDC")
+        transactions.perform_swap(
+            1.0, "SOL_MINT", "USDC_MINT", "SOL", "USDC", attempts=attempts
+        )
     )
 
     # Executed via the order quote despite the lost execute response.
-    assert result is not None
-    assert result["out_amount"] == 1.0 and result["sent_amount"] == 1.0
-    assert result["quoted_out_amount"] == 1.0
-    assert result["signature"] is None  # reconciled, never confirmed
+    assert result == {"out_amount": 1.0, "sent_amount": 1.0}
+    # The attempt record says the outcome came from the balance, not /execute.
+    assert len(attempts) == 1
+    assert attempts[0]["status"] == "unknown" and attempts[0]["balance_moved"]
+    assert attempts[0]["signature"] is None
+    assert "connection lost" in attempts[0]["error"]
 
 
 def test_perform_swap_returns_none_when_balance_unmoved(monkeypatch):
@@ -209,3 +214,40 @@ def test_perform_swap_returns_none_when_balance_unmoved(monkeypatch):
     )
 
     assert result is None
+
+
+def test_perform_swap_records_every_attempt(monkeypatch):
+    import asyncio
+
+    from sol_trade import transactions
+
+    orders = iter([transactions.OrderError("no route"), {"requestId": "r2", "outAmount": "7"},
+                   {"requestId": "r3", "outAmount": "7"}])
+
+    async def fake_create(*args, **kwargs):
+        order = next(orders)
+        if isinstance(order, Exception):
+            raise order
+        return order
+
+    results = iter([{"status": "Failed", "signature": "s2", "error": "slippage"},
+                    {"status": "Success", "signature": "s3", "totalOutputAmount": "6"}])
+
+    async def fake_execute(order):
+        return next(results)
+
+    monkeypatch.setattr(transactions, "create_order", fake_create)
+    monkeypatch.setattr(transactions, "execute_order", fake_execute)
+    monkeypatch.setattr(transactions, "decimals", lambda mint: 0)
+    monkeypatch.setattr(transactions, "_input_balance", lambda mint: 10.0)
+
+    attempts = []
+    result = asyncio.run(
+        transactions.perform_swap(1.0, "A", "B", "A", "B", attempts=attempts)
+    )
+
+    assert result == {"out_amount": 6.0, "sent_amount": 1.0}
+    assert [a["status"] for a in attempts] == ["no_order", "failed", "executed"]
+    assert [a["signature"] for a in attempts] == [None, "s2", "s3"]
+    assert attempts[2]["order"]["outAmount"] == "7"
+    assert attempts[2]["total_output_amount"] == "6"

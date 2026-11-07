@@ -1,14 +1,22 @@
 import base64
+import json
+import time
 from typing import Any
 
 import httpx
+from solana.rpc.commitment import Confirmed
 from solders.message import to_bytes_versioned
+from solders.signature import Signature
 from solders.transaction import VersionedTransaction
 
+from sol_trade import rpc
 from sol_trade.config import config
 from sol_trade.jupiter import decimals
 from sol_trade.log import log_general, log_transaction
+from sol_trade.utils import handle_rate_limiting, run_async
 from sol_trade.wallet import find_balance
+
+_LAMPORTS_PER_SIGNATURE = 5000
 
 
 def _input_balance(mint: str) -> float | None:
@@ -31,7 +39,7 @@ def _swap_consumed(mint: str, sent_amount: float, balance_before: float | None) 
     return balance_before - after >= sent_amount * 0.9
 
 
-# Order fields perform_swap passes back to its caller.
+# Order fields perform_swap records for each attempt.
 _ORDER_AUDIT_KEYS = (
     "requestId",
     "inAmount",
@@ -43,6 +51,86 @@ _ORDER_AUDIT_KEYS = (
     "gasless",
     "router",
 )
+
+
+@handle_rate_limiting()
+def _fetch_transaction(signature: str) -> dict[str, Any] | None:
+    """A confirmed transaction as parsed JSON, or None when the RPC has none."""
+    with rpc.essential():
+        response = run_async(
+            config().client.get_transaction(
+                Signature.from_string(signature),
+                encoding="jsonParsed",
+                commitment=Confirmed,
+                max_supported_transaction_version=0,
+            )
+        )
+    return json.loads(response.to_json()).get("result")
+
+
+def transaction_receipt(
+    signature: str, mints: list[str], tries: int = 3, delay: float = 2.0
+) -> dict[str, Any] | None:
+    """What a landed transaction did to the wallet, read from the chain.
+
+    ``change`` is the wallet's net change per mint in token units, before
+    fees: native SOL counts the main account's lamports plus wrapped SOL,
+    with the fee the wallet paid added back. Returns None when the RPC
+    can't produce the transaction after ``tries`` reads.
+    """
+    for attempt in range(tries):
+        try:
+            result = _fetch_transaction(signature)
+        except Exception as e:  # noqa: BLE001 - the caller reports it as unknown
+            log_general.warning(f"could not read transaction {signature}: {e}")
+            return None
+        if result:
+            return _receipt(signature, result, mints)
+        if attempt < tries - 1:
+            time.sleep(delay)
+    return None
+
+
+def _receipt(signature: str, result: dict[str, Any], mints: list[str]) -> dict[str, Any]:
+    meta = result.get("meta") or {}
+    transaction = result.get("transaction") or {}
+    keys = [
+        key.get("pubkey") if isinstance(key, dict) else key
+        for key in (transaction.get("message") or {}).get("accountKeys") or []
+    ]
+    wallet = str(config().public_address)
+    fee = int(meta.get("fee") or 0)
+    payer_is_wallet = bool(keys) and keys[0] == wallet
+    wallet_fee = fee if payer_is_wallet else 0
+    lamports = 0
+    if wallet in keys:
+        index = keys.index(wallet)
+        lamports = int(meta["postBalances"][index]) - int(meta["preBalances"][index])
+
+    def tokens(balances: list[dict[str, Any]] | None, mint: str) -> float:
+        return sum(
+            int(b["uiTokenAmount"]["amount"]) / 10 ** int(b["uiTokenAmount"]["decimals"])
+            for b in balances or []
+            if b.get("owner") == wallet and b.get("mint") == mint
+        )
+
+    change = {}
+    for mint in mints:
+        delta = tokens(meta.get("postTokenBalances"), mint) - tokens(meta.get("preTokenBalances"), mint)
+        if mint == config().sol_mint:
+            delta += (lamports + wallet_fee) / 1e9
+        change[mint] = delta
+    base_fee = _LAMPORTS_PER_SIGNATURE * len(transaction.get("signatures") or [])
+    return {
+        "signature": signature,
+        "slot": result.get("slot"),
+        "err": meta.get("err"),
+        "fee_lamports": fee,
+        "fee_payer_is_wallet": payer_is_wallet,
+        "wallet_fee_lamports": wallet_fee,
+        "wallet_priority_fee_lamports": max(wallet_fee - base_fee, 0),
+        "change": change,
+    }
 
 
 class OrderError(Exception):
@@ -222,8 +310,19 @@ async def perform_swap(
     output_token_mint: str,
     sent_token_symbol: str,
     output_token_symbol: str,
+    attempts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
-    """Swap tokens via Jupiter; returns fill amounts on success, else None."""
+    """Swap tokens via Jupiter; returns fill amounts on success, else None.
+
+    When ``attempts`` is given, one record per order attempt is appended to
+    it as the attempt runs, so a caller keeps the evidence even when this
+    returns None or raises. ``status`` is ``no_order`` (no order was built,
+    nothing was signed), ``unknown`` (an order was built but its execute
+    response never arrived, so it may have landed), ``executed`` or
+    ``failed`` (Jupiter's /execute status). ``balance_moved`` marks the
+    attempt this function treated as executed because the input balance
+    dropped.
+    """
     log_general.info("SolTrade is taking a market position.")
 
     # Sample the input balance so a lost/failed execute response can be
@@ -237,12 +336,36 @@ async def perform_swap(
 
     for i in range(3):
         if not is_tx_successful:
+            attempt: dict[str, Any] = {
+                "status": "no_order",
+                "request_id": None,
+                "order": None,
+                "signature": None,
+                "total_output_amount": None,
+                "error": None,
+                "balance_moved": False,
+            }
+            if attempts is not None:
+                attempts.append(attempt)
             try:
                 order = await create_order(
                     sent_amount, sent_token_mint, output_token_mint
                 )
+                attempt.update(
+                    status="unknown",
+                    request_id=order.get("requestId"),
+                    order={key: order.get(key) for key in _ORDER_AUDIT_KEYS},
+                )
                 
                 execute_result = await execute_order(order)
+                attempt.update(
+                    status="executed"
+                    if execute_result.get("status") == "Success"
+                    else "failed",
+                    signature=execute_result.get("signature"),
+                    total_output_amount=execute_result.get("totalOutputAmount"),
+                    error=execute_result.get("error"),
+                )
                 
                 if execute_result.get("status") == "Success":
                     is_tx_successful = True
@@ -253,12 +376,14 @@ async def perform_swap(
                         f"Error: {execute_result.get('error')}"
                     )
             except Exception as e:  # noqa: BLE001 - retry loop
+                attempt["error"] = f"{type(e).__name__}: {e}"
                 log_general.warning(
                     f"SolTrade failed to complete transaction {i}. Retrying. Error: {e}"
                 )
                 if order is not None and _swap_consumed(
                     sent_token_mint, sent_amount, balance_before
                 ):
+                    attempt["balance_moved"] = True
                     # The order was submitted and the funds moved even though
                     # the response was lost — treat it as executed.
                     log_general.warning(
@@ -289,16 +414,4 @@ async def perform_swap(
     log_transaction.info(
         f"SolTrade sold {sent_amount} {sent_token_symbol} for {bought_amount:.2f} {output_token_symbol}."
     )
-    # What Jupiter quoted and reported, for callers that audit a swap. The
-    # signature is None when the swap was only reconciled from the balance.
-    signature = None
-    if execute_result is not None and execute_result.get("status") == "Success":
-        signature = execute_result.get("signature")
-    order = order or {}
-    return {
-        "out_amount": bought_amount,
-        "sent_amount": sent_amount,
-        "quoted_out_amount": int(order.get("outAmount") or 0) / output_decimals,
-        "signature": signature,
-        "order": {key: order.get(key) for key in _ORDER_AUDIT_KEYS},
-    }
+    return {"out_amount": bought_amount, "sent_amount": sent_amount}
