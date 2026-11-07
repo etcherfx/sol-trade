@@ -443,7 +443,7 @@ Every strategy variant counts: the deflated Sharpe ratio corrects for the number
 
 ## Agent CLI
 
-`uv run -m sol_trade.cli <command>` prints one JSON object on stdout and nothing else: `{"ok": true, "command": ..., ...}` on success, `{"ok": false, "command": ..., "error": "<code>", "message": ..., "details": [...]}` otherwise. Exit codes are `0` ok, `1` refused or failed, and `2` usage error. Logs go to the log files. Only `swap-smoke` signs transactions, and only after you type `yes` in an interactive terminal.
+`uv run -m sol_trade.cli <command>` prints one JSON object on stdout and nothing else: `{"ok": true, "command": ..., ...}` on success, `{"ok": false, "command": ..., "error": "<code>", "message": ..., "details": [...]}` otherwise. Exit codes are `0` ok, `1` refused or failed, and `2` usage error. Logs go to the log files. Only `swap-smoke` signs transactions, and only in a human-supervised run that answers `yes` in an interactive terminal.
 
 | Command | Output |
 | --- | --- |
@@ -464,7 +464,7 @@ Every strategy variant counts: the deflated Sharpe ratio corrects for the number
 
 ### Before going live
 
-No backtest, dry run or healthcheck signs a transaction, so prove the wallet, the key and the Jupiter order, sign and execute path once with a small supervised round trip before you drop `--dry-run`:
+No backtest, dry run or healthcheck signs a transaction, so prove the wallet, the key and the Jupiter order, sign and execute path once with a human-supervised run of a small round trip before you drop `--dry-run`:
 
 ```bash
 uv run -m sol_trade.cli swap-smoke --usd 5

@@ -452,7 +452,7 @@ def _confirm(lines: list[str]) -> bool:
 def cmd_swap_smoke(args: argparse.Namespace) -> dict[str, Any]:
     """Buy SOL with the primary token, then sell exactly what arrived, through the live swap path.
 
-    A supervised plumbing check: it never touches config.json, the books,
+    A human-supervised plumbing check: it never touches config.json, the books,
     promotion state or the kill switch.
     """
     _require_tty("swap-smoke")
@@ -500,7 +500,7 @@ def cmd_swap_smoke(args: argparse.Namespace) -> dict[str, Any]:
     ]):
         raise CliError("not_confirmed", "nothing was sent: the answer was not yes")
 
-    log_transaction.info(f"swap-smoke: buying {sol} with {amount:g} {primary} (supervised plumbing check)")
+    log_transaction.info(f"swap-smoke: buying {sol} with {amount:g} {primary} (human-supervised plumbing check)")
     buy = asyncio.run(transactions.perform_swap(amount, cfg.primary_mint, cfg.sol_mint, primary, sol))
     if not buy or float(buy["out_amount"]) <= 0:
         raise CliError("buy_failed", "the buy did not complete; nothing else was sent")
@@ -612,7 +612,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(run=cmd_resume)
 
     p = sub.add_parser(
-        "swap-smoke", help="send one small real buy and sell to check the live swap path (human, interactive terminal)"
+        "swap-smoke", help="send one small real buy and sell to check the live swap path (human-supervised run, interactive terminal)"
     )
     p.add_argument("--usd", type=float, default=SMOKE_DEFAULT_USD,
                    help=f"size in USD (default {SMOKE_DEFAULT_USD:g}, at most {SMOKE_MAX_USD:g})")

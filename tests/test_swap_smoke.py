@@ -1,4 +1,4 @@
-"""swap-smoke: the supervised real-swap check, against fake Jupiter and RPC (no network)."""
+"""swap-smoke: the human-supervised real-swap check, against fake Jupiter and RPC (no network)."""
 
 import base64
 import io
