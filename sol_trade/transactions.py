@@ -75,8 +75,10 @@ def transaction_receipt(
 
     ``change`` is the wallet's net change per mint in token units, before
     fees: native SOL counts the main account's lamports plus wrapped SOL,
-    with the fee the wallet paid added back. Returns None when the RPC
-    can't produce the transaction after ``tries`` reads.
+    with the fee the wallet paid added back. The SOL change is None when
+    the transaction opened or closed another account (rent moved with the
+    swap) or its balances don't line up with its accounts. Returns None
+    when the RPC can't produce the transaction after ``tries`` reads.
     """
     for attempt in range(tries):
         try:
@@ -102,10 +104,20 @@ def _receipt(signature: str, result: dict[str, Any], mints: list[str]) -> dict[s
     fee = int(meta.get("fee") or 0)
     payer_is_wallet = bool(keys) and keys[0] == wallet
     wallet_fee = fee if payer_is_wallet else 0
+    pre, post = meta.get("preBalances") or [], meta.get("postBalances") or []
+    aligned = len(keys) == len(pre) == len(post)
     lamports = 0
-    if wallet in keys:
+    if aligned and wallet in keys:
         index = keys.index(wallet)
-        lamports = int(meta["postBalances"][index]) - int(meta["preBalances"][index])
+        lamports = int(post[index]) - int(pre[index])
+    # Accounts opened or closed here move rent into or out of the wallet's
+    # lamports (closing a wrapped-SOL account refunds its rent), which the
+    # lamport delta can't tell apart from swap output.
+    rent_accounts = [
+        keys[i]
+        for i in range(len(keys) if aligned else 0)
+        if keys[i] != wallet and (int(pre[i]) == 0) != (int(post[i]) == 0)
+    ]
 
     def tokens(balances: list[dict[str, Any]] | None, mint: str) -> float:
         return sum(
@@ -114,10 +126,13 @@ def _receipt(signature: str, result: dict[str, Any], mints: list[str]) -> dict[s
             if b.get("owner") == wallet and b.get("mint") == mint
         )
 
-    change = {}
+    change: dict[str, float | None] = {}
     for mint in mints:
         delta = tokens(meta.get("postTokenBalances"), mint) - tokens(meta.get("preTokenBalances"), mint)
         if mint == config().sol_mint:
+            if not aligned or rent_accounts:
+                change[mint] = None  # the SOL the swap delivered can't be isolated
+                continue
             delta += (lamports + wallet_fee) / 1e9
         change[mint] = delta
     base_fee = _LAMPORTS_PER_SIGNATURE * len(transaction.get("signatures") or [])
@@ -129,6 +144,7 @@ def _receipt(signature: str, result: dict[str, Any], mints: list[str]) -> dict[s
         "fee_payer_is_wallet": payer_is_wallet,
         "wallet_fee_lamports": wallet_fee,
         "wallet_priority_fee_lamports": max(wallet_fee - base_fee, 0),
+        "rent_accounts": rent_accounts,
         "change": change,
     }
 

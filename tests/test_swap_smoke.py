@@ -331,14 +331,111 @@ def test_sells_the_chain_receipt_not_the_quote(jup, answer, chain, mints):
     assert payload["buy"]["slippage_bps"] > 300
 
 
-def test_falls_back_to_jupiters_reported_fill_and_marks_fees_unknown(jup, answer, chain, mints):
-    del chain.chain[_sig(1)]  # the RPC never returns the buy
+def test_buy_without_a_chain_receipt_sends_no_sell(jup, answer, chain, mints):
+    # Jupiter reports a signed fill, but the RPC never returns the buy: its SOL is not proven.
+    del chain.chain[_sig(1)]
+    code, payload = _run()
+    assert code == 1 and payload["error"] == "buy_unresolved"
+    assert len(jup.orders) == 1
+    buy = payload["details"][0]["buy"]
+    assert buy["attempts"][0]["signature"] == _sig(1) and buy["attempts"][0]["receipt"] is None
+    assert buy["fees"]["complete"] is False
+
+
+def test_sell_falls_back_to_jupiters_reported_fill_and_marks_fees_unknown(jup, answer, chain, mints):
+    del chain.chain[_sig(2)]  # the RPC never returns the sell; its proceeds are not sold again
     code, payload = _run()
     assert code == 0, payload
-    buy = payload["buy"]
-    assert buy["filled_from"] == "jupiter_execute" and buy["filled_out"] == pytest.approx(0.0333)
-    assert buy["fees"]["complete"] is False and buy["fees"]["charged_lamports"] is None
+    sell = payload["sell"]
+    assert sell["filled_from"] == "jupiter_execute" and sell["filled_out"] == pytest.approx(4.985)
+    assert sell["fees"]["complete"] is False and sell["fees"]["charged_lamports"] is None
     assert payload["round_trip"]["status"] == "fees_incomplete"
+
+
+def _close_wrapped_sol_account(tx: dict, mints, wrapped_lamports: int) -> dict:
+    """Add a preexisting wrapped-SOL account of the wallet that the transaction closes into the wallet."""
+    wallet_key = str(config().public_address)
+    keys = tx["transaction"]["message"]["accountKeys"]
+    meta = tx["meta"]
+    keys.append({"pubkey": "So1ana11111111111111111111111111111111111111"})
+    index = len(keys) - 1
+    rent = 2_039_280
+    meta["preBalances"].append(rent + wrapped_lamports)
+    meta["postBalances"].append(0)
+    meta["postBalances"][[k["pubkey"] for k in keys].index(wallet_key)] += rent + wrapped_lamports
+    meta["preTokenBalances"].append({"accountIndex": index, "mint": mints["sol"], "owner": wallet_key,
+                                     "uiTokenAmount": {"amount": str(wrapped_lamports), "decimals": 9}})
+    return tx
+
+
+def test_receipt_cannot_isolate_sol_when_an_account_closes(mints):
+    tx = _close_wrapped_sol_account(
+        _chain_tx(mints, lamports=33_300_000, primary_raw=-5_000_000, fee=10_000, payer_is_wallet=False),
+        mints, wrapped_lamports=1_000_000,
+    )
+    receipt = transactions._receipt(_sig(1), tx, [mints["primary"], mints["sol"]])
+    assert receipt["change"][mints["sol"]] is None
+    assert receipt["change"][mints["primary"]] == pytest.approx(-5.0)  # token deltas stay exact
+    assert receipt["rent_accounts"] == ["So1ana11111111111111111111111111111111111111"]
+
+
+def test_receipt_cannot_isolate_sol_when_balances_do_not_line_up(mints):
+    tx = _chain_tx(mints, lamports=33_300_000, primary_raw=-5_000_000, fee=10_000, payer_is_wallet=False)
+    tx["meta"]["postBalances"].pop()
+    receipt = transactions._receipt(_sig(1), tx, [mints["sol"]])
+    assert receipt["change"][mints["sol"]] is None
+
+
+def test_buy_that_closes_a_wrapped_sol_account_sends_no_sell(jup, answer, chain, mints):
+    # The rent refund and the old wrapped SOL would otherwise count as bought SOL and be sold.
+    chain.chain[_sig(1)] = _close_wrapped_sol_account(chain.chain[_sig(1)], mints, wrapped_lamports=1_000_000)
+    code, payload = _run()
+    assert code == 1 and payload["error"] == "buy_unresolved"
+    assert len(jup.orders) == 1 and len(jup.sent) == 1
+    buy = payload["details"][0]["buy"]
+    assert buy["attempts"][0]["receipt"]["rent_accounts"]
+    assert buy["filled_out"] is None
+
+
+def test_success_with_an_amount_but_no_signature_sends_no_sell(jup, answer, mints):
+    jup.replies[0] = {"status": "Success", "totalOutputAmount": "33300000"}
+    code, payload = _run()
+    assert code == 1 and payload["error"] == "buy_unresolved"
+    assert len(jup.orders) == 1
+    buy = payload["details"][0]["buy"]
+    assert buy["signature"] is None and buy["filled_out"] is None
+    assert buy["attempts"][0]["status"] == "executed"
+    assert buy["attempts"][0]["total_output_amount"] == "33300000"
+
+
+def test_signed_failure_without_a_receipt_then_success_sends_no_sell(jup, answer, chain, mints):
+    # The failed attempt's transaction can't be read, so it may have landed too.
+    jup.replies.insert(0, {"status": "Failed", "signature": _sig(9), "error": "timeout"})
+    code, payload = _run()
+    assert code == 1 and payload["error"] == "buy_unresolved"
+    assert len(jup.orders) == 2  # two buy attempts, no sell
+    attempts = payload["details"][0]["buy"]["attempts"]
+    assert [a["status"] for a in attempts] == ["failed", "executed"]
+    assert attempts[0]["receipt"] is None and attempts[1]["receipt"] is not None
+
+
+def test_signed_failures_without_receipts_are_unresolved_not_failed(jup, answer, mints):
+    jup.replies = [{"status": "Failed", "signature": _sig(n), "error": "timeout"} for n in (7, 8, 9)]
+    code, payload = _run()
+    assert code == 1 and payload["error"] == "buy_unresolved"
+    assert "may have landed" in payload["message"]
+    attempts = payload["details"][0]["buy"]["attempts"]
+    assert [a["signature"] for a in attempts] == [_sig(7), _sig(8), _sig(9)]
+
+
+def test_signed_failures_proven_by_receipts_are_failed(jup, answer, chain, mints):
+    jup.replies = [{"status": "Failed", "signature": _sig(n), "error": "slippage"} for n in (7, 8, 9)]
+    for n in (7, 8, 9):
+        chain.chain[_sig(n)] = _chain_tx(mints, lamports=0, primary_raw=0, fee=5_000, payer_is_wallet=True,
+                                         err={"InstructionError": [0, "SlippageToleranceExceeded"]})
+    code, payload = _run()
+    assert code == 1 and payload["error"] == "buy_failed"
+    assert payload["details"][0]["buy"]["fees"]["charged_lamports"] == 15_000
 
 
 def test_lost_buy_response_sends_no_sell(jup, answer, mints):

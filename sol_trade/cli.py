@@ -413,13 +413,15 @@ def cmd_resume(args: argparse.Namespace) -> dict[str, Any]:
         raise _refused(e) from e
 
 
-def _smoke_leg(side: str, amount: float, in_mint: str, out_mint: str, sol_usd: float) -> dict[str, Any]:
+def _smoke_leg(side: str, amount: float, in_mint: str, out_mint: str, sol_usd: float,
+               require_chain: bool) -> dict[str, Any]:
     """Send one swap through the live path and reconcile what it did from the chain.
 
     Never raises once the swap is sent: errors land in the leg. ``outcome`` is
-    ``confirmed`` (the received amount is known from the chain or Jupiter's
-    execute report), ``failed`` (every attempt is known not to have swapped)
-    or ``unresolved`` (an attempt may have landed; check the wallet).
+    ``confirmed`` (a signed swap whose received amount is known from its
+    receipt, or, unless ``require_chain``, from Jupiter's execute report),
+    ``failed`` (every attempt is known not to have swapped) or ``unresolved``
+    (an attempt may have landed or the amount can't be proven; check the wallet).
     """
     cfg = config()
     in_symbol, out_symbol = cfg.symbol_for_mint(in_mint) or in_mint, cfg.symbol_for_mint(out_mint) or out_mint
@@ -437,7 +439,7 @@ def _smoke_leg(side: str, amount: float, in_mint: str, out_mint: str, sol_usd: f
         transactions_result = None
         leg["error"] = f"{type(e).__name__}: {e}"
     try:
-        _reconcile_leg(leg, transactions_result, in_mint, out_mint, sol_usd)
+        _reconcile_leg(leg, transactions_result, in_mint, out_mint, sol_usd, require_chain)
     except Exception as e:  # noqa: BLE001 - keep the attempts; the outcome stays unresolved
         log_general.exception(f"swap-smoke: reconciling the {side} failed")
         leg["outcome"] = "unresolved"
@@ -446,7 +448,7 @@ def _smoke_leg(side: str, amount: float, in_mint: str, out_mint: str, sol_usd: f
 
 
 def _reconcile_leg(leg: dict[str, Any], result: dict[str, Any] | None, in_mint: str, out_mint: str,
-                   sol_usd: float) -> None:
+                   sol_usd: float, require_chain: bool) -> None:
     attempts = leg["attempts"]
     for attempt in attempts:
         if attempt["signature"]:
@@ -482,19 +484,24 @@ def _reconcile_leg(leg: dict[str, Any], result: dict[str, Any] | None, in_mint: 
         },
     }
 
-    def landed(attempt: dict[str, Any]) -> bool:
+    def may_have_landed(attempt: dict[str, Any]) -> bool:
+        if attempt["status"] == "unknown" or attempt["balance_moved"]:
+            return True
+        if attempt["status"] != "failed" or not attempt["signature"]:
+            return False
+        # A signed failure is proven only by a receipt that shows the error.
         receipt = attempt.get("receipt")
-        return receipt is not None and receipt["err"] is None
+        return receipt is None or receipt["err"] is None
 
-    maybe_landed = [
-        a for a in attempts
-        if a["status"] == "unknown" or a["balance_moved"] or (a["status"] == "failed" and landed(a))
-    ]
+    maybe_landed = [a for a in attempts if may_have_landed(a)]
     if final is None or maybe_landed:
         no_swap = not executed and not maybe_landed and result is None and leg["error"] is None
         leg["outcome"] = "failed" if no_swap else "unresolved"
         return
 
+    if not final["signature"]:
+        leg["outcome"] = "unresolved"  # Success without a signature proves nothing on chain
+        return
     out_decimals = 10 ** transactions.decimals(out_mint)
     receipt = final.get("receipt")
     if receipt is not None and receipt["err"] is not None:
@@ -502,12 +509,13 @@ def _reconcile_leg(leg: dict[str, Any], result: dict[str, Any] | None, in_mint: 
         return
     if receipt is not None:
         filled, source = receipt["change"][out_mint], "chain"
-    elif final["total_output_amount"]:
+    elif final["total_output_amount"] and not require_chain:
         filled, source = int(final["total_output_amount"]) / out_decimals, "jupiter_execute"
     else:
-        leg["outcome"] = "unresolved"  # landed, but no actual amount: never use the quote
+        # Never the quote; and an amount that will be sold again needs the chain's word.
+        leg["outcome"] = "unresolved"
         return
-    if filled <= 0:
+    if filled is None or filled <= 0:
         leg["outcome"] = "unresolved"
         return
     order = final.get("order") or {}
@@ -618,7 +626,8 @@ def cmd_swap_smoke(args: argparse.Namespace) -> dict[str, Any]:
     legs: dict[str, Any] = {}
     try:
         log_transaction.info(f"swap-smoke: buying {sol} with {amount:g} {primary} (human-supervised plumbing check)")
-        buy = legs["buy"] = _smoke_leg("buy", amount, cfg.primary_mint, cfg.sol_mint, sol_usd)
+        buy = legs["buy"] = _smoke_leg("buy", amount, cfg.primary_mint, cfg.sol_mint, sol_usd,
+                                         require_chain=True)  # its SOL is sold next
         if buy["outcome"] == "failed":
             raise CliError("buy_failed", "every buy attempt failed before swapping; nothing else was sent", [legs])
         if buy["outcome"] != "confirmed":
@@ -629,7 +638,8 @@ def cmd_swap_smoke(args: argparse.Namespace) -> dict[str, Any]:
                 [legs],
             )
         log_transaction.info(f"swap-smoke: selling {buy['filled_out']:g} {sol} back to {primary}")
-        sell = legs["sell"] = _smoke_leg("sell", float(buy["filled_out"]), cfg.sol_mint, cfg.primary_mint, sol_usd)
+        sell = legs["sell"] = _smoke_leg("sell", float(buy["filled_out"]), cfg.sol_mint, cfg.primary_mint, sol_usd,
+                                           require_chain=False)
         if sell["outcome"] == "failed":
             raise CliError(
                 "sell_failed",
