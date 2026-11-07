@@ -180,7 +180,10 @@ def test_perform_swap_treats_lost_execute_as_success_when_balance_moved(monkeypa
     )
 
     # Executed via the order quote despite the lost execute response.
-    assert result == {"out_amount": 1.0, "sent_amount": 1.0}
+    assert result is not None
+    assert result["out_amount"] == 1.0 and result["sent_amount"] == 1.0
+    assert result["quoted_out_amount"] == 1.0
+    assert result["signature"] is None  # reconciled, never confirmed
 
 
 def test_perform_swap_returns_none_when_balance_unmoved(monkeypatch):

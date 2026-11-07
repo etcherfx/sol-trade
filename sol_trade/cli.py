@@ -4,11 +4,13 @@ Every command prints exactly one JSON object on stdout:
 ``{"ok": true, "command": ..., ...}`` or
 ``{"ok": false, "command": ..., "error": "<code>", "message": ..., "details": [...]}``.
 Exit codes: 0 ok, 1 refused or failed, 2 usage error. Logs go to the log
-files only. ``approve``, ``reopen`` and ``resume`` are for humans and refuse
-to run without an interactive terminal. Nothing here signs or sends a transaction.
+files only. ``approve``, ``reopen``, ``resume`` and ``swap-smoke`` are for
+humans and refuse to run without an interactive terminal. Only ``swap-smoke``
+signs and sends transactions, after a typed ``yes``.
 """
 
 import argparse
+import asyncio
 import json
 import math
 import sys
@@ -27,16 +29,22 @@ from sol_trade import (
     fear_greed,
     heartbeat,
     history,
+    jupiter,
     ledger,
     promotion,
     rpc,
     sentiment,
+    transactions,
+    wallet,
 )
 from sol_trade.config import config
-from sol_trade.log import log_general, setup_file_logging
+from sol_trade.log import log_general, log_transaction, setup_file_logging
 from sol_trade.spec import SpecError, Strategy, load_strategy, resolve_strategy_name
 
 REPORT_LIMIT = 1900
+SMOKE_DEFAULT_USD = 5.0
+SMOKE_MAX_USD = 10.0
+_LAMPORTS_PER_SOL = 1e9
 
 
 class CliError(Exception):
@@ -405,6 +413,139 @@ def cmd_resume(args: argparse.Namespace) -> dict[str, Any]:
         raise _refused(e) from e
 
 
+def _smoke_leg(result: dict[str, Any], sent_symbol: str, out_symbol: str, sol_usd: float) -> dict[str, Any]:
+    """One swap's audit: quoted vs filled, slippage against the quote, fees."""
+    order = result.get("order") or {}
+    quoted, filled = float(result.get("quoted_out_amount") or 0), float(result["out_amount"])
+    signature_fee = int(order.get("signatureFeeLamports") or 0)
+    priority_fee = int(order.get("prioritizationFeeLamports") or 0)
+    gasless = bool(order.get("gasless"))
+    return {
+        "signature": result.get("signature"),
+        "request_id": order.get("requestId"),
+        "sent": result["sent_amount"],
+        "sent_symbol": sent_symbol,
+        "quoted_out": quoted,
+        "filled_out": filled,
+        "out_symbol": out_symbol,
+        "slippage_bps": (quoted - filled) / quoted * 1e4 if quoted > 0 else None,
+        "jupiter_fee_bps": order.get("feeBps"),
+        "router": order.get("router"),
+        "fees": {
+            "gasless": gasless,
+            "signature_fee_lamports": signature_fee,
+            "prioritization_fee_lamports": priority_fee,
+            "rent_fee_lamports": int(order.get("rentFeeLamports") or 0),
+            # Gasless orders are paid by Jupiter, as in the cost model's probes.
+            "network_fee_usd": 0.0 if gasless else (signature_fee + priority_fee) / _LAMPORTS_PER_SOL * sol_usd,
+        },
+    }
+
+
+def _confirm(lines: list[str]) -> bool:
+    """Ask on stderr (stdout carries only the JSON envelope); True on a typed ``yes``."""
+    sys.stderr.write("\n".join(lines) + "\nType yes to send both swaps: ")
+    sys.stderr.flush()
+    return sys.stdin.readline().strip() == "yes"
+
+
+def cmd_swap_smoke(args: argparse.Namespace) -> dict[str, Any]:
+    """Buy SOL with the primary token, then sell exactly what arrived, through the live swap path.
+
+    A supervised plumbing check: it never touches config.json, the books,
+    promotion state or the kill switch.
+    """
+    _require_tty("swap-smoke")
+    usd = float(args.usd)
+    if not math.isfinite(usd) or usd <= 0:
+        raise CliError("usage", "--usd must be a positive amount", exit_code=2)
+    if usd > SMOKE_MAX_USD:
+        raise CliError("over_cap", f"--usd {usd:g} is above the {SMOKE_MAX_USD:g} USD cap")
+    cfg = config()
+    primary, sol = cfg.primary_mint_symbol, cfg.symbol_for_mint(cfg.sol_mint) or "SOL"
+    if cfg.primary_mint == cfg.sol_mint:
+        raise CliError("primary_is_sol", "swap-smoke buys SOL with the primary token, so the primary can't be SOL")
+    paused = promotion.paused()
+    if paused is not None:
+        raise CliError("paused", "the kill switch is on; clear it with resume first", [paused])
+    held = [
+        {"book": book, "symbol": position.symbol, "size": position.size}
+        for book, position in ledger.open_positions()
+        if book in (ledger.LIVE, ledger.DRY_RUN)
+    ]
+    if held:
+        raise CliError("open_positions", f"the bot holds {len(held)} open position(s); run this when it holds none",
+                       held)
+
+    prices = jupiter.fetch_prices([cfg.primary_mint, cfg.sol_mint])
+    primary_usd, sol_usd = prices.get(cfg.primary_mint, 0.0), prices.get(cfg.sol_mint, 0.0)
+    if primary_usd <= 0 or sol_usd <= 0:
+        raise CliError("no_price", f"no USD price for {primary} or {sol}", [prices])
+    amount = usd / primary_usd
+    primary_balance = wallet.find_balance(cfg.primary_mint)
+    reserve = wallet.minimum_sol_needed()
+    sol_spendable = wallet.find_balance(cfg.sol_mint)
+    if primary_balance is None or sol_spendable is None:
+        raise CliError("balance_unavailable", "the RPC did not return the wallet's balances")
+    if primary_balance < amount:
+        raise CliError("insufficient_funds", f"the wallet holds {primary_balance:g} {primary}; the smoke needs {amount:g}")
+    if sol_spendable <= 0:
+        raise CliError("insufficient_sol", f"the wallet holds less SOL than the {reserve:g} SOL fee reserve")
+
+    if not _confirm([
+        f"swap-smoke sends two REAL mainnet swaps from {cfg.public_address}:",
+        f"  1. buy {sol} with {amount:g} {primary} (about {usd:g} USD)",
+        f"  2. sell exactly the {sol} received back to {primary}",
+        f"Wallet: {primary_balance:g} {primary}, {sol_spendable:g} {sol} above the {reserve:g} SOL reserve.",
+    ]):
+        raise CliError("not_confirmed", "nothing was sent: the answer was not yes")
+
+    log_transaction.info(f"swap-smoke: buying {sol} with {amount:g} {primary} (supervised plumbing check)")
+    buy = asyncio.run(transactions.perform_swap(amount, cfg.primary_mint, cfg.sol_mint, primary, sol))
+    if not buy or float(buy["out_amount"]) <= 0:
+        raise CliError("buy_failed", "the buy did not complete; nothing else was sent")
+    buy_leg = _smoke_leg(buy, primary, sol, sol_usd)
+    log_transaction.info(f"swap-smoke: selling {buy['out_amount']:g} {sol} back to {primary}")
+    sell = asyncio.run(transactions.perform_swap(float(buy["out_amount"]), cfg.sol_mint, cfg.primary_mint, sol, primary))
+    if not sell:
+        raise CliError("sell_failed", f"the sell did not complete; the wallet keeps the {buy['out_amount']:g} {sol} bought",
+                       [{"buy": buy_leg}])
+    sell_leg = _smoke_leg(sell, sol, primary, sol_usd)
+
+    spent_usd = amount * primary_usd
+    back_usd = float(sell["out_amount"]) * primary_usd
+    fees_usd = buy_leg["fees"]["network_fee_usd"] + sell_leg["fees"]["network_fee_usd"]
+    cost_usd = spent_usd - back_usd + fees_usd
+    model = costs.model_for(sol)
+    model_usd = 2 * model.cost_usd(spent_usd)  # one buy and one sell of the same size
+    cost_bps = cost_usd / spent_usd * 1e4
+    model_bps = model_usd / spent_usd * 1e4
+    log_transaction.info(
+        f"swap-smoke: round trip cost {cost_usd:.4f} USD ({cost_bps:.1f} bps); model {model_bps:.1f} bps"
+    )
+    return {
+        "usd": usd,
+        "prices_usd": {primary: primary_usd, sol: sol_usd},
+        "buy": buy_leg,
+        "sell": sell_leg,
+        "round_trip": {
+            "spent_usd": spent_usd,
+            "returned_usd": back_usd,
+            "network_fees_usd": fees_usd,
+            "cost_usd": cost_usd,
+            "cost_bps": cost_bps,
+        },
+        "model": {
+            "source": model.source,
+            "measured_at": model.measured_at,
+            "per_side_bps": model.bps(spent_usd),
+            "round_trip_usd": model_usd,
+            "round_trip_bps": model_bps,
+            "actual_minus_model_bps": cost_bps - model_bps,
+        },
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = _Parser(prog="sol_trade.cli", description="SolTrade research and pipeline commands (JSON output).")
     sub = parser.add_subparsers(dest="command", required=True, parser_class=_Parser)
@@ -469,6 +610,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("resume", help="clear the kill switch (human, interactive terminal)")
     p.set_defaults(run=cmd_resume)
+
+    p = sub.add_parser(
+        "swap-smoke", help="send one small real buy and sell to check the live swap path (human, interactive terminal)"
+    )
+    p.add_argument("--usd", type=float, default=SMOKE_DEFAULT_USD,
+                   help=f"size in USD (default {SMOKE_DEFAULT_USD:g}, at most {SMOKE_MAX_USD:g})")
+    p.set_defaults(run=cmd_swap_smoke)
     return parser
 
 

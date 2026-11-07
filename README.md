@@ -107,7 +107,7 @@ docker compose up -d --build
 | `./data` → `/app/data` | Candles, positions, the pipeline, recordings, the heartbeat |
 | `./logs` → `/app/logs` | Log files |
 
-To trade real money, set `command: []` in `compose.yaml`. Run CLI commands inside the container with `docker compose exec soltrade python -m sol_trade.cli status`.
+To trade real money, run `swap-smoke` first (see [Before going live](#before-going-live)), then set `command: []` in `compose.yaml`. Run CLI commands inside the container with `docker compose exec soltrade python -m sol_trade.cli status`.
 
 **Unraid:** copy the folder to a share (for example `/mnt/user/appdata/sol-trade`), set `PUID=99` and `PGID=100` in the environment (or an `.env` file next to `compose.yaml`) so files belong to `nobody:users`, and start it with the Compose Manager plugin or `docker compose up -d --build` in that folder.
 
@@ -443,7 +443,7 @@ Every strategy variant counts: the deflated Sharpe ratio corrects for the number
 
 ## Agent CLI
 
-`uv run -m sol_trade.cli <command>` prints one JSON object on stdout and nothing else: `{"ok": true, "command": ..., ...}` on success, `{"ok": false, "command": ..., "error": "<code>", "message": ..., "details": [...]}` otherwise. Exit codes are `0` ok, `1` refused or failed, and `2` usage error. Logs go to the log files. The CLI never signs a transaction.
+`uv run -m sol_trade.cli <command>` prints one JSON object on stdout and nothing else: `{"ok": true, "command": ..., ...}` on success, `{"ok": false, "command": ..., "error": "<code>", "message": ..., "details": [...]}` otherwise. Exit codes are `0` ok, `1` refused or failed, and `2` usage error. Logs go to the log files. Only `swap-smoke` signs transactions, and only after you type `yes` in an interactive terminal.
 
 | Command | Output |
 | --- | --- |
@@ -460,6 +460,18 @@ Every strategy variant counts: the deflated Sharpe ratio corrects for the number
 | `approve <strategy> <symbol>` | Lets paper → live proceed when `require_approval` is on (interactive terminal only) |
 | `reopen <strategy> <symbol>` | Re-opens a hash rejected by the old fixed held-out trade minimum, once, after replaying its stored held-out period under the current rule (interactive terminal only) |
 | `resume` | Clears the kill switch (interactive terminal only) |
+| `swap-smoke [--usd 5]` | Sends two **real** swaps: buys `--usd` worth of SOL with the primary token, then sells exactly the SOL received back. Reports both signatures, quoted vs filled amounts, slippage against the quote, network and priority fees, and the round-trip cost next to the cost model's estimate for that size. At most 10 USD. Refuses (`paused`, `open_positions`, `insufficient_funds`, `insufficient_sol`, `over_cap`) when the kill switch is on, the live or dry-run book holds a position, or the wallet lacks the primary amount or the SOL fee reserve. Never touches `config.json`, the books or the pipeline (interactive terminal only, typed `yes`) |
+
+### Before going live
+
+No backtest, dry run or healthcheck signs a transaction, so prove the wallet, the key and the Jupiter order, sign and execute path once with a small supervised round trip before you drop `--dry-run`:
+
+```bash
+uv run -m sol_trade.cli swap-smoke --usd 5
+docker compose exec soltrade python -m sol_trade.cli swap-smoke --usd 5   # in the container (needs the key in .env)
+```
+
+It costs the round trip's spread and fees, typically a few cents. Both swaps go to `logs/transaction.log`. If `cost_bps` is far above `model.round_trip_bps`, run `measure-costs` before trusting backtests.
 
 ## FAQ
 

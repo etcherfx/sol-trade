@@ -31,6 +31,20 @@ def _swap_consumed(mint: str, sent_amount: float, balance_before: float | None) 
     return balance_before - after >= sent_amount * 0.9
 
 
+# Order fields perform_swap passes back to its caller.
+_ORDER_AUDIT_KEYS = (
+    "requestId",
+    "inAmount",
+    "outAmount",
+    "feeBps",
+    "signatureFeeLamports",
+    "prioritizationFeeLamports",
+    "rentFeeLamports",
+    "gasless",
+    "router",
+)
+
+
 class OrderError(Exception):
     """Raised when the Jupiter API returns an invalid order response."""
 
@@ -275,4 +289,16 @@ async def perform_swap(
     log_transaction.info(
         f"SolTrade sold {sent_amount} {sent_token_symbol} for {bought_amount:.2f} {output_token_symbol}."
     )
-    return {"out_amount": bought_amount, "sent_amount": sent_amount}
+    # What Jupiter quoted and reported, for callers that audit a swap. The
+    # signature is None when the swap was only reconciled from the balance.
+    signature = None
+    if execute_result is not None and execute_result.get("status") == "Success":
+        signature = execute_result.get("signature")
+    order = order or {}
+    return {
+        "out_amount": bought_amount,
+        "sent_amount": sent_amount,
+        "quoted_out_amount": int(order.get("outAmount") or 0) / output_decimals,
+        "signature": signature,
+        "order": {key: order.get(key) for key in _ORDER_AUDIT_KEYS},
+    }
