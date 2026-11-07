@@ -466,9 +466,19 @@ class References:
             self.unavailable.get((symbol, column)),
         )
 
-    def absent(self) -> list[str]:
-        """Symbols with no bar at all among the loaded ones."""
-        return [s for s, f in self.frames.items() if f.empty]
+    def absent(self, first_ts: int | None = None, last_ts: int | None = None) -> list[str]:
+        """Symbols with no stored bar opening in ``[first_ts, last_ts]`` (all loaded bars by default)."""
+        out = []
+        for symbol, frame in self.frames.items():
+            ts = frame["ts"].to_numpy()
+            inside = np.ones(ts.shape, dtype=bool)
+            if first_ts is not None:
+                inside &= ts >= first_ts
+            if last_ts is not None:
+                inside &= ts <= last_ts
+            if not inside.any():
+                out.append(symbol)
+        return out
 
     def missing(
         self, closes: np.ndarray, series: tuple[tuple[str, str], ...] | list[tuple[str, str]]

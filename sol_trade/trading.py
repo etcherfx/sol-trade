@@ -297,8 +297,8 @@ def _load(symbol: str) -> Strategy | None:
 def _report_absent_references(symbol: str, absent: list[str]) -> None:
     """Log once when a token's strategy reads a symbol with no stored candles, and once when it recovers."""
     message = (
-        f"{symbol}: no stored candles for reference(s) {', '.join(absent)}; its bars are decided without them "
-        "and stay missing in backtests (run backfill)"
+        f"{symbol}: no stored candles for reference(s) {', '.join(absent)} in the lookback; its bars are decided "
+        "without them, and this book's replays read them as missing (run backfill)"
         if absent
         else None
     )
@@ -323,10 +323,12 @@ def run_symbol(
 
     A strategy that reads other symbols' candles never waits for them. Each
     bar is decided on the reference bars stored at that moment, and any
-    value of a series it reads that is missing then is recorded, so
-    backtests and replays read it as missing too, even after it arrives.
-    While a reference has no stored bar at all in the window, the bars open
-    no positions; exits, stops and trailing stops run as usual.
+    value of a series it reads that is missing then is recorded for this
+    book and strategy hash, so this book's replays read it as missing too,
+    even after it arrives; research reads the candle store as it is. A bar
+    whose own lookback holds no stored bar of a reference opens no position,
+    and that block is recorded for the replays as well; exits, stops and
+    trailing stops run as usual.
     """
     now = time.time() if now is None else now
     risk = strategy.risk
@@ -340,6 +342,7 @@ def run_symbol(
     ts = frame["ts"].to_numpy()
     new = np.flatnonzero(ts > state.last_bar_ts) if state.last_bar_ts is not None else np.array([len(ts) - 1])
     references = None
+    blocked: list[int] = []
     if strategy.references:
         references = history.refresh_references(
             strategy.references, strategy.timeframe, int(ts[0]), strategy.lookback + missed, now
@@ -350,11 +353,11 @@ def run_symbol(
             missing = references.missing(ts[first : int(new[-1]) + 1] + period, strategy.reference_series)
             ledger.record_reference_marks(book.name, strategy.hash, symbol, missing, now)
             references.mark(missing)
-        absent = references.absent()
-        _report_absent_references(symbol, absent)
-        if absent and len(new):
-            ledger.record_blocked_entries(book.name, strategy.hash, symbol, [int(ts[i]) for i in new], now)
-        allow_entry = allow_entry and not absent
+        lookback_start = np.maximum(np.arange(len(ts)) - strategy.lookback + 1, 0)
+        blocked = [int(ts[i]) for i in new if references.absent(int(ts[lookback_start[i]]), int(ts[i]))]
+        newest = len(ts) - 1
+        _report_absent_references(symbol, references.absent(int(ts[lookback_start[newest]]), int(ts[newest])))
+        ledger.record_blocked_entries(book.name, strategy.hash, symbol, blocked, now)
     entry, exit_ = backtest.compute_signals(strategy, frame, symbol, references=references)
     is_live = book.name == ledger.LIVE
     for i in new:
@@ -364,7 +367,7 @@ def run_symbol(
         book.on_low(symbol, bar_ts, float(row.open), float(row.low), risk)
         action = book.on_close(
             symbol, bar_ts, float(row.high), float(row.close), bool(entry[i]), bool(exit_[i]),
-            risk, strategy.name, strategy.hash, allow_entry,
+            risk, strategy.name, strategy.hash, allow_entry and bar_ts not in blocked,
         )
         if is_live and action is not None and action.side == BUY and i != len(ts) - 1:
             log_general.info(f"{symbol}: stale entry signal from a replayed bar ignored")

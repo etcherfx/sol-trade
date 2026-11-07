@@ -84,18 +84,24 @@ def book_signals(
 
 
 def reference_usable(
-    strategy: Strategy, frame: pd.DataFrame, references: Callable[..., Any] | None = None
+    strategy: Strategy,
+    frame: pd.DataFrame,
+    references: Callable[..., Any] | None = None,
+    symbol: str | None = None,
 ) -> dict[str, np.ndarray]:
     """Per reference symbol and bar of ``frame``: every rule operand reading it has a value there.
+
+    ``symbol`` is the traded token, which operands that also read its
+    sentiment need (as in :func:`compute_signals`).
 
     Bars without a full window of history are False. This is what a rule
     that reads the reference actually sees, so a gap inside an indicator's
     window counts as missing.
     """
     usable = {s: np.zeros(len(frame), dtype=bool) for s in strategy.references}
-    for bars, result in _evaluate_frame(strategy, frame, None, None, None, references):
-        for symbol, flags in result.reference_usable.items():
-            usable[symbol][bars] = flags
+    for bars, result in _evaluate_frame(strategy, frame, symbol, None, None, references):
+        for reference, flags in result.reference_usable.items():
+            usable[reference][bars] = flags
     return usable
 
 

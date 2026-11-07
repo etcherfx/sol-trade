@@ -13,6 +13,7 @@ from sol_trade import (
     evaluation,
     history,
     ledger,
+    sentiment,
     spec,
     trading,
 )
@@ -595,3 +596,77 @@ def test_restarting_a_book_drops_its_marks():
     ledger.delete_book("paper_x")
     assert ledger.reference_marks("paper_x", "h", "TKN") == {} and ledger.blocked_entries("paper_x", "h", "TKN") == []
     assert ledger.reference_marks("paper_y", "h", "TKN") == {("REF", "close"): [120]}
+
+
+# ------------------------------------------- absence per decision, sentiment
+
+
+EITHER = {**RELATIVE, "name": "either", "lookback": 30,
+          "entry": {"any": [["close", ">", 0], {"not": [REF_CLOSE, "<", 0]}]},
+          "exit": ["close", "<", 0]}
+
+
+def _batched_outage(monkeypatch, book_name):
+    """REF stops after the bar opening at bar 80; the book last decided bar 100 and wakes at bar 161."""
+    book, _, clock = _live(monkeypatch, book_name, 11, n_bars=200, never=[T0 + k * PERIOD for k in range(81, 200)])
+    strategy = spec.compile_spec(EITHER)
+    book.state("TKN").last_bar_ts = T0 + 100 * PERIOD
+    clock["now"] = float(T0 + 161 * PERIOD + 1)
+    view = trading.run_symbol(book, "TKN", strategy, now=clock["now"])
+    assert view["bars"] == 60  # bars 101 to 160 in one batch
+    return book, strategy
+
+
+def test_a_batched_live_decision_without_the_reference_in_its_own_lookback_opens_nothing(monkeypatch):
+    book, strategy = _batched_outage(monkeypatch, ledger.LIVE)
+    stored = history.load_bars(history.source_for("REF"), "1m")["ts"].to_numpy()
+    assert stored.max() == T0 + 80 * PERIOD  # the batch still holds REF bars, bar 160's lookback none
+    assert book.position("TKN") is None and book.state("TKN").pending is None and book.fills == []
+    # Bars whose lookback (the bar and the 29 before it) misses bar 80 are blocked; earlier ones aren't.
+    assert ledger.blocked_entries(ledger.LIVE, strategy.hash, "TKN") == [T0 + k * PERIOD for k in range(110, 161)]
+    assert "REF" in trading._reference_errors["TKN"]
+
+
+def test_a_batched_paper_book_and_its_replay_agree_on_blocked_decisions(monkeypatch):
+    book, strategy = _batched_outage(monkeypatch, "paper_batch")
+    # Not a live book: replayed bars before the blocks may enter; none buys after bar 110's decision.
+    buys = [f.ts for f in book.fills if f.side == "buy"]
+    assert buys and buys[0] == T0 + 102 * PERIOD and max(buys) <= T0 + 110 * PERIOD
+    replay = _replay(strategy, T0 + 101 * PERIOD, T0 + 160 * PERIOD, "paper_batch")
+    _same_trades(book, replay, T0 + 160 * PERIOD)
+    frame = history.load_bars(history.source_for("TKN"), "1m")
+    replayed, _ = backtest.book_signals(strategy, frame, "TKN", "paper_batch")
+    researched, _ = backtest.compute_signals(strategy, frame, "TKN")
+    late = frame["ts"].to_numpy() >= T0 + 110 * PERIOD
+    assert not replayed[late].any() and researched[late].all()
+
+
+def _mood(spec_dict):
+    """The entry also needs REF close plus the token's sentiment score to be positive."""
+    return {**spec_dict, "name": "swing_mood",
+            "indicators": {**spec_dict["indicators"], "mood": {"fn": "sentiment", "window_hours": 6}},
+            "entry": {"all": [spec_dict["entry"], [{"add": [REF_CLOSE, "mood.score"]}, ">", 0]]}}
+
+
+def test_operands_reading_a_reference_and_the_tokens_sentiment_are_usable(monkeypatch):
+    def features(symbol, closes, window_hours, now=None):
+        value = np.full(np.shape(closes), 0.5 if symbol == "TKN" else np.nan)
+        return {"score": value, "mentions": np.where(np.isnan(value), np.nan, 3.0)}
+
+    monkeypatch.setattr(sentiment, "features", features)
+    market = _market()
+    _store_ref(market)
+    strategy = spec.compile_spec(_mood(SPEC))
+    assert strategy.uses_sentiment and strategy.references == ("REF",)
+    usable = backtest.reference_usable(strategy, market, symbol="TKN")["REF"]
+    assert usable[strategy.lookback - 1 :].all()
+    assert not backtest.reference_usable(strategy, market)["REF"].any()  # without the token, no sentiment
+
+    result = evaluation.evaluate(strategy, "TKN", market, FREE, record=False)
+    assert result["data"]["references"]["REF"]["usable_bars"] == result["data"]["selection_bars"]
+    assert not any("reference" in r for r in result["reasons"])
+    assert result["metrics"] == evaluation.evaluate(
+        spec.compile_spec(SPEC), "TKN", market, FREE, record=False
+    )["metrics"]  # both added inputs are always positive
+    held = evaluation.holdout(strategy, "TKN", market, FREE)
+    assert "references" not in held and not any("reference" in r for r in held["reasons"])

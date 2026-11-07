@@ -189,9 +189,9 @@ def _data_info(frame: pd.DataFrame, strategy: Strategy, cut: Split, symbol: str)
 
 
 def _reference_info(
-    strategy: Strategy, frame: pd.DataFrame, start: int, end: int, period_name: str
+    strategy: Strategy, symbol: str, frame: pd.DataFrame, start: int, end: int, period_name: str
 ) -> tuple[dict[str, Any], list[str]]:
-    """Per referenced symbol over bars ``[start, end)`` of ``frame``: source, stored range and coverage.
+    """Per reference of ``symbol``'s strategy over bars ``[start, end)`` of ``frame``: source, range, coverage.
 
     ``coverage`` is the share of those bars with a value of every series
     the rules read from the symbol. ``usable_bars`` counts the bars where
@@ -203,19 +203,19 @@ def _reference_info(
     info: dict[str, Any] = {}
     reasons: list[str] = []
     refs = history.load_references(strategy.references, strategy.timeframe, required=False)
-    usable = backtest.reference_usable(strategy, frame, refs)
+    usable = backtest.reference_usable(strategy, frame, refs, symbol)
     closes = frame["ts"].to_numpy(dtype=float)[start:end] + strategy.period_seconds
     backfill = f"run backfill --symbols {{symbol}} --timeframes {strategy.timeframe}"
-    for symbol in strategy.references:
-        ref = refs.frames[symbol]
+    for reference in strategy.references:
+        ref = refs.frames[reference]
         ts = ref["ts"]
-        columns = [column for s, column in strategy.reference_series if s == symbol]
+        columns = [column for s, column in strategy.reference_series if s == reference]
         present = np.ones(closes.shape, dtype=bool)
         for column in columns:
-            present &= ~np.isnan(refs(symbol, column, closes))
-        usable_bars = int(usable[symbol][start:end].sum())
-        info[symbol] = {
-            "source": history.source_for(symbol).as_dict(),
+            present &= ~np.isnan(refs(reference, column, closes))
+        usable_bars = int(usable[reference][start:end].sum())
+        info[reference] = {
+            "source": history.source_for(reference).as_dict(),
             "series": columns,
             "bars": len(ref),
             "first": _iso(int(ts.iat[0])) if len(ref) else None,
@@ -224,11 +224,11 @@ def _reference_info(
             "usable_bars": usable_bars,
         }
         if ref.empty:
-            reasons.append(str(history.MissingReference(symbol, strategy.timeframe)))
+            reasons.append(str(history.MissingReference(reference, strategy.timeframe)))
         elif usable_bars == 0:
             reasons.append(
-                f"reference {symbol} gives the rules no usable value in the {period_name}: every operand "
-                f"reading it is missing on all {end - start} bars; " + backfill.format(symbol=symbol)
+                f"reference {reference} gives the rules no usable value in the {period_name}: every operand "
+                f"reading it is missing on all {end - start} bars; " + backfill.format(symbol=reference)
             )
     return info, reasons
 
@@ -285,7 +285,7 @@ def evaluate(
         return result
     if strategy.references:
         data["references"], missing = _reference_info(
-            strategy, frame, cut.start, cut.holdout_start, "selection period"
+            strategy, symbol, frame, cut.start, cut.holdout_start, "selection period"
         )
         if missing:
             result.update(verdict=INSUFFICIENT, reasons=missing, rpc=_rpc_delta(before))
@@ -410,7 +410,7 @@ def holdout(
         )
         return result
     if strategy.references:
-        references, missing = _reference_info(strategy, frame, cut.holdout_start, cut.end, "held-out period")
+        references, missing = _reference_info(strategy, symbol, frame, cut.holdout_start, cut.end, "held-out period")
         if missing:
             result.update(verdict=INSUFFICIENT, passed=False, reasons=missing, start_ts=start_ts,
                           references=references, rpc=_rpc_delta(before))
