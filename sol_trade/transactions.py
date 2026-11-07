@@ -320,6 +320,22 @@ async def execute_order(order_response: dict) -> dict[str, Any]:
         raise
 
 
+def _base_units(value: Any) -> int | None:
+    """A Jupiter amount (an integer string of base units), or None if it isn't one."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        amount = value
+    elif isinstance(value, str):
+        try:
+            amount = int(value.strip())
+        except ValueError:
+            return None
+    else:
+        return None
+    return amount if amount >= 0 else None
+
+
 async def perform_swap(
     sent_amount: float,
     sent_token_mint: str,
@@ -418,14 +434,24 @@ async def perform_swap(
 
     # Calculate the actual amounts from the execution result
     output_decimals = 10 ** decimals(output_token_mint)
-    
-    output_amount_str = "0"
-    if execute_result and execute_result.get("totalOutputAmount"):
-        output_amount_str = execute_result.get("totalOutputAmount")
-    elif order and order.get("outAmount"):
-        output_amount_str = order.get("outAmount")
-    
-    bought_amount = int(output_amount_str) / output_decimals
+
+    # The swap has landed, so an odd amount must not raise here. Only a
+    # successful execute reports a fill; after a lost response the result
+    # may be left over from an earlier failed attempt.
+    output_amount = None
+    if execute_result and execute_result.get("status") == "Success":
+        output_amount = _base_units(execute_result.get("totalOutputAmount"))
+    if output_amount is None and order:
+        output_amount = _base_units(order.get("outAmount"))
+    if output_amount is None:
+        log_general.warning(
+            "swap landed but Jupiter reported no usable output amount "
+            f"(execute {execute_result and execute_result.get('totalOutputAmount')!r}, "
+            f"order {order and order.get('outAmount')!r}); recording 0"
+        )
+        output_amount = 0
+
+    bought_amount = output_amount / output_decimals
     
     log_transaction.info(
         f"SolTrade sold {sent_amount} {sent_token_symbol} for {bought_amount:.2f} {output_token_symbol}."

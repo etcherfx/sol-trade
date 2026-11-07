@@ -251,3 +251,68 @@ def test_perform_swap_records_every_attempt(monkeypatch):
     assert [a["signature"] for a in attempts] == [None, "s2", "s3"]
     assert attempts[2]["order"]["outAmount"] == "7"
     assert attempts[2]["total_output_amount"] == "6"
+
+
+def _landed_swap(monkeypatch, order, executed):
+    import asyncio
+
+    from sol_trade import transactions
+
+    async def fake_create(*args, **kwargs):
+        return order
+
+    async def fake_execute(_order):
+        return executed
+
+    monkeypatch.setattr(transactions, "create_order", fake_create)
+    monkeypatch.setattr(transactions, "execute_order", fake_execute)
+    monkeypatch.setattr(transactions, "decimals", lambda mint: 0)
+    monkeypatch.setattr(transactions, "_input_balance", lambda mint: 10.0)
+    return asyncio.run(transactions.perform_swap(1.0, "A", "B", "A", "B"))
+
+
+@pytest.mark.parametrize("reported", ["12.5", "-3", "abc", 1.5, ["6"], True])
+def test_perform_swap_falls_back_to_the_quote_on_an_odd_fill(monkeypatch, reported):
+    result = _landed_swap(monkeypatch, {"requestId": "r1", "outAmount": "7"},
+                          {"status": "Success", "signature": "s1", "totalOutputAmount": reported})
+
+    assert result == {"out_amount": 7.0, "sent_amount": 1.0}
+
+
+def test_perform_swap_records_zero_when_no_amount_parses(monkeypatch):
+    result = _landed_swap(monkeypatch, {"requestId": "r1", "outAmount": "n/a"},
+                          {"status": "Success", "signature": "s1", "totalOutputAmount": None})
+
+    assert result == {"out_amount": 0.0, "sent_amount": 1.0}
+
+
+def test_perform_swap_ignores_a_failed_attempt_fill_after_a_lost_response(monkeypatch):
+    import asyncio
+
+    from sol_trade import transactions
+
+    orders = iter([{"requestId": "r1", "outAmount": "7"}, {"requestId": "r2", "outAmount": "8"}])
+
+    async def fake_create(*args, **kwargs):
+        return next(orders)
+
+    calls = iter([{"status": "Failed", "signature": "s1", "totalOutputAmount": "999"},
+                  RuntimeError("connection lost after submit")])
+
+    async def fake_execute(_order):
+        outcome = next(calls)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(transactions, "create_order", fake_create)
+    monkeypatch.setattr(transactions, "execute_order", fake_execute)
+    monkeypatch.setattr(transactions, "decimals", lambda mint: 0)
+    # Before the swap, after the failed attempt, after the lost one.
+    balances = iter([10.0, 9.0])
+    monkeypatch.setattr(transactions, "_input_balance", lambda mint: next(balances))
+
+    result = asyncio.run(transactions.perform_swap(1.0, "A", "B", "A", "B"))
+
+    # The landed order's quote, not the failed attempt's leftover 999.
+    assert result == {"out_amount": 8.0, "sent_amount": 1.0}
