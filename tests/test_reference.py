@@ -670,3 +670,72 @@ def test_operands_reading_a_reference_and_the_tokens_sentiment_are_usable(monkey
     )["metrics"]  # both added inputs are always positive
     held = evaluation.holdout(strategy, "TKN", market, FREE)
     assert "references" not in held and not any("reference" in r for r in held["reasons"])
+
+
+# ------------------------------------------------- a reference source that refuses
+
+
+class _HourlyOnly:
+    """A reference venue that doesn't offer the strategy's 1m timeframe."""
+
+    id = "hourly"
+    timeframes = {"1h": "1h"}  # noqa: RUF012 - read-only fake
+
+    def fetch_ohlcv(self, *_args, **_kwargs):
+        raise AssertionError("a refused timeframe must not be fetched")
+
+
+def _reference_on_another_venue(monkeypatch, ticks):
+    book, feed, clock = _live(monkeypatch, ledger.LIVE, ticks=ticks)
+    hourly = _HourlyOnly()
+    monkeypatch.setattr(data_source, "get_exchange", lambda exchange_id=None, **_: hourly if exchange_id == "hourly" else feed)
+    monkeypatch.setattr(config(), "token_exchanges", {"REF": "hourly"})
+    warnings = []
+    monkeypatch.setattr(history.log_general, "warning", lambda message, *a, **k: warnings.append(str(message)))
+    return book, clock, warnings
+
+
+def test_a_reference_venue_refusing_the_timeframe_keeps_live_stops_running(monkeypatch):
+    ticks = make_ticks(80, seed=4)
+    ticks[61][2] = ticks[61][0] * 0.9  # a wick in the forming bar
+    book, clock, warnings = _reference_on_another_venue(monkeypatch, ticks)
+    strategy = spec.compile_spec(EITHER)
+    entry = ticks[59][-1]
+    state = book.state("TKN")
+    state.last_bar_ts = T0 + 59 * PERIOD
+    state.position = Position("TKN", strategy.name, strategy.hash, entry, 1.0, entry, T0 + 59 * PERIOD,
+                              stop=entry * 0.97)
+    clock["now"] = T0 + 61 * PERIOD + 50  # bar 60 closed; bar 61 forming, after the wick
+    view = trading.run_symbol(book, "TKN", strategy, now=clock["now"])
+
+    assert view["bars"] == 1 and state.last_bar_ts == T0 + 60 * PERIOD  # bar 60 was still decided
+    assert book.position("TKN") is None
+    assert [f.reason for f in book.fills] == ["stoploss"]
+    assert any("reference REF" in w and "not offered by hourly" in w for w in warnings)
+    # The reference has no stored bars: the decision is blocked and recorded for the book's replays.
+    assert ledger.blocked_entries(ledger.LIVE, strategy.hash, "TKN") == [T0 + 60 * PERIOD]
+    assert "REF" in trading._reference_errors["TKN"]
+
+
+def test_a_reference_venue_refusing_the_timeframe_reads_stored_bars_like_an_outage(monkeypatch):
+    book, clock, warnings = _reference_on_another_venue(monkeypatch, make_ticks(80, seed=4))
+    ts = T0 + np.arange(55) * PERIOD
+    history._store(history.source_for("REF"), "1m",
+                   [history.Bar(*row) for row in _frame(ts, np.full(55, 3.0)).itertuples(index=False)])
+    strategy = spec.compile_spec(EITHER)
+    clock["now"] = T0 + 60 * PERIOD + 1
+    trading.run_symbol(book, "TKN", strategy, now=clock["now"])
+
+    assert warnings  # logged, not raised
+    assert ledger.blocked_entries(ledger.LIVE, strategy.hash, "TKN") == []  # bar 59's lookback holds REF bars
+    marked = _marks(ledger.LIVE, strategy)
+    assert marked == [int(t) for t in T0 + np.arange(55, 60) * PERIOD + PERIOD]  # the bars it never got
+    # The independent branch may still enter; the forming bar's open fills it.
+    assert [(f.ts, f.side) for f in book.fills] == [(T0 + 60 * PERIOD, "buy")]
+
+
+def test_the_traded_tokens_own_unsupported_timeframe_still_raises(monkeypatch):
+    book, feed, _ = _live(monkeypatch, ledger.LIVE, n_bars=80)
+    feed.timeframes = {"1h": "1h"}
+    with pytest.raises(ValueError, match="not offered"):
+        trading.run_symbol(book, "TKN", spec.compile_spec(EITHER), now=T0 + 60 * PERIOD + 1)

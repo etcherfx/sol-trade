@@ -528,15 +528,17 @@ def refresh_references(
 ) -> References:
     """Update every reference like :func:`window` and load its bars from ``start`` on.
 
-    A reference whose exchange fails is logged and read as far as it is
-    stored; the live loop never waits for one.
+    A reference whose source fails, with no fresh candles or by refusing
+    the timeframe or the exchange id (``ValueError``), is logged and read
+    as far as it is stored, like an outage; the live loop never waits for
+    one. Database errors still raise.
     """
     period = timeframe_seconds(timeframe)
     now = time.time() if now is None else now
     for symbol in symbols:
         try:
             window(symbol, timeframe, bars, now)
-        except ConnectionError as e:
+        except (ConnectionError, ValueError) as e:
             log_general.warning(f"reference {symbol}: {e}; values missing when a bar is decided stay missing for that book")
     end = int(now // period) * period
     return load_references(symbols, timeframe, start - period, end, required=False)
