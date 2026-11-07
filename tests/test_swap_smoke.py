@@ -13,7 +13,7 @@ from solders.transaction import VersionedTransaction
 
 from sol_trade import cli, jupiter, ledger, promotion, rpc, transactions, wallet
 from sol_trade.config import config
-from sol_trade.engine import Position
+from sol_trade.engine import Position, SymbolState
 from sol_trade.log import log_transaction
 from tests.test_transactions import _txn_with_wallet_as_second_signer
 
@@ -225,14 +225,24 @@ def test_refuses_while_the_kill_switch_is_on(jup, answer):
     assert jup.orders == []
 
 
-@pytest.mark.parametrize("book", [ledger.LIVE, ledger.DRY_RUN, "paper:swing/SOL"])
-def test_refuses_while_any_bot_book_holds_a_position(jup, answer, monkeypatch, mints, book):
+@pytest.mark.parametrize("book", [ledger.LIVE, ledger.DRY_RUN])
+def test_refuses_while_the_live_or_dry_run_book_holds_a_position(jup, answer, mints, book):
     position = Position(mints["sol_symbol"], "default", "h", SOL_PRICE, 0.1, 15.0, 0)
-    monkeypatch.setattr(ledger, "open_positions", lambda name=None: [(book, position)])
+    ledger.save_state(book, mints["sol_symbol"], SymbolState(position=position))
     code, payload = _run()
     assert code == 1 and payload["error"] == "open_positions"
     assert payload["details"] == [{"book": book, "symbol": mints["sol_symbol"], "size": 0.1}]
     assert jup.orders == []
+
+
+def test_ignores_a_paper_book_position(jup, answer, mints):
+    # A candidate that went live stops advancing its paper book, which keeps its open entry forever.
+    position = Position(mints["sol_symbol"], "default", "h", 104.81, 0.673, 70.5, 0)
+    ledger.save_state("paper:23e38f17f116:SOL", mints["sol_symbol"],
+                      SymbolState(position=position, last_bar_ts=1792389600))
+    code, payload = _run()
+    assert code == 0, payload
+    assert len(jup.sent) == 2
 
 
 def test_refuses_without_enough_primary(jup, answer, mints):
