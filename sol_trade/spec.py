@@ -242,7 +242,10 @@ class _Compiler:
         self._failed: set[str] = set()
         self.uses_sentiment = False
         self.uses_fear_greed = False
-        self.references: set[str] = set()
+        self.reference_series: set[tuple[str, str]] = set()  # (symbol, column)
+        self.indicator_refs: dict[str, frozenset[str]] = {}  # indicator -> reference symbols it reads
+        # Rule operands that read a reference: (symbols, operand, bars of it a rule compares)
+        self.reference_operands: list[tuple[frozenset[str], Operand, int]] = []
 
     def error(self, path: str, message: str) -> None:
         self.errors.append(f"{path}: {message}")
@@ -306,7 +309,6 @@ class _Compiler:
 
         canonical = canonical_json(spec)
         assert entry is not None and lookback is not None and isinstance(name, str)
-        reference_warmup = max(self._ref_need_rule(spec["entry"]), self._ref_need_rule(spec.get("exit")))
         return Strategy(
             name=name,
             description=spec.get("description", ""),
@@ -319,48 +321,13 @@ class _Compiler:
             hash=hashlib.sha256(canonical.encode()).hexdigest(),
             uses_sentiment=self.uses_sentiment,
             uses_fear_greed=self.uses_fear_greed,
-            references=tuple(sorted(self.references)),
-            reference_warmup=reference_warmup,
+            references=tuple(sorted({symbol for symbol, _ in self.reference_series})),
+            reference_series=tuple(sorted(self.reference_series)),
+            _reference_operands=list(self.reference_operands),
             _order=[self.compiled[n] for n in self.order],
             _entry=entry,
             _exit=exit_rule,
         )
-
-    # -- reference history (run on a spec that compiled without errors)
-
-    def _ref_need_rule(self, rule: Any) -> int:
-        """Consecutive reference bars a rule needs to have a value; 0 when it reads no reference."""
-        if rule is None:
-            return 0
-        if isinstance(rule, list):
-            return max(self._ref_need(rule[0]), self._ref_need(rule[2]))
-        (key, args), = rule.items()
-        if key in ("all", "any"):
-            return max(self._ref_need_rule(item) for item in args)
-        if key == "not":
-            return self._ref_need_rule(args)
-        need = max(self._ref_need(args[0]), self._ref_need(args[1]))  # crosses_above / crosses_below
-        return need + 1 if need else 0
-
-    def _ref_need(self, value: Any) -> int:
-        if isinstance(value, dict):
-            (op, args), = value.items()
-            if op == "ref":
-                return 1
-            if op == "shift":
-                need = self._ref_need(args[0])
-                return need + args[1] if need else 0
-            return max(self._ref_need(args[0]), self._ref_need(args[1]))
-        if not isinstance(value, str) or value in COLUMNS:
-            return 0
-        base, _, output = value.partition(".")
-        spec = self.indicator_specs[base]
-        fn = _FUNCTIONS[spec["fn"]]
-        need = self._ref_need(spec.get("input", "close")) if fn.takes_input else 0
-        if not need:
-            return 0
-        params = {k: spec.get(k, p.default) for k, p in fn.params.items()}
-        return fn.need(params, need)[output]
 
     def _risk(self, risk: Any) -> "Risk":
         values: dict[str, float] = {}
@@ -429,12 +396,13 @@ class _Compiler:
             self.error(f"{path}.fast", "must be smaller than slow")
         source: Operand | None = None
         input_need = 1
+        input_refs: frozenset[str] = frozenset()
         self._visiting.append(name)
         try:
             if fn.takes_input:
                 compiled_input = self._operand(spec.get("input", "close"), f"{path}.input")
                 if compiled_input is not None:
-                    source, input_need = compiled_input
+                    source, input_need, input_refs = compiled_input
         finally:
             self._visiting.pop()
         if any(v is None for v in params.values()) or (fn.takes_input and source is None):
@@ -445,6 +413,7 @@ class _Compiler:
             self.uses_fear_greed = True
         needs = fn.need(params, input_need)
         self.needs[name] = needs
+        self.indicator_refs[name] = input_refs
 
         fn_key = str(fn_name)
 
@@ -474,10 +443,11 @@ class _Compiler:
 
     # -- operands
 
-    def _operand(self, value: Any, path: str) -> tuple[Operand, int] | None:
+    def _operand(self, value: Any, path: str) -> tuple[Operand, int, frozenset[str]] | None:
+        """The compiled operand, the bars it needs, and the reference symbols it reads."""
         if _is_number(value):
             number = float(value)
-            return (lambda ctx: number), 1
+            return (lambda ctx: number), 1, frozenset()
         if isinstance(value, str):
             return self._reference(value, path)
         if isinstance(value, dict) and len(value) == 1:
@@ -493,8 +463,8 @@ class _Compiler:
                 inner = self._operand(args[0], f"{path}.shift[0]")
                 if inner is None:
                     return None
-                source, need = inner
-                return (lambda ctx: _shift(source(ctx), bars)), need + bars
+                source, need, refs = inner
+                return (lambda ctx: _shift(source(ctx), bars)), need + bars, refs
             if op in _ARITH:
                 if not (isinstance(args, list) and len(args) == 2):
                     self.error(path, f"{op} takes [a, b]")
@@ -510,13 +480,13 @@ class _Compiler:
                     with np.errstate(divide="ignore", invalid="ignore"):
                         return func(a(ctx), b(ctx))
 
-                return arith, max(left[1], right[1])
+                return arith, max(left[1], right[1]), left[2] | right[2]
             if op == "ref":
                 return self._symbol_reference(args, f"{path}.ref")
         self.error(path, "expected a number, a column or indicator name, or {shift|add|sub|mul|div|ref: ...}")
         return None
 
-    def _symbol_reference(self, args: Any, path: str) -> tuple[Operand, int] | None:
+    def _symbol_reference(self, args: Any, path: str) -> tuple[Operand, int, frozenset[str]] | None:
         """``{"symbol": ..., "series": column}``: another symbol's bar column on the same timeframe."""
         if not isinstance(args, dict):
             self.error(path, 'must be an object like {"symbol": "ABC", "series": "close"}')
@@ -535,12 +505,12 @@ class _Compiler:
         if not ok:
             return None
         assert isinstance(symbol, str) and isinstance(column, str)
-        self.references.add(symbol)
-        return (lambda ctx: _reference_series(ctx, symbol, column)), 1
+        self.reference_series.add((symbol, column))
+        return (lambda ctx: _reference_series(ctx, symbol, column)), 1, frozenset({symbol})
 
-    def _reference(self, ref: str, path: str) -> tuple[Operand, int] | None:
+    def _reference(self, ref: str, path: str) -> tuple[Operand, int, frozenset[str]] | None:
         if ref in COLUMNS:
-            return (lambda ctx: ctx.columns[ref]), 1
+            return (lambda ctx: ctx.columns[ref]), 1, frozenset()
         base, _, output = ref.partition(".")
         if base not in self.indicator_specs:
             known = [*COLUMNS, *self.indicator_specs]
@@ -555,13 +525,19 @@ class _Compiler:
                 hint = f"; outputs: {', '.join(outputs)}" if outputs else " (it has a single output)"
                 self.error(path, f"{base!r} has no output {output!r}{hint}")
                 return None
-            return (lambda ctx: ctx.values[base][output]), needs[output]
+            return (lambda ctx: ctx.values[base][output]), needs[output], self.indicator_refs[base]
         if "" not in needs:
             self.error(path, f"{base!r} has several outputs; use one of {', '.join(f'{base}.{o}' for o in needs)}")
             return None
-        return (lambda ctx: ctx.values[base]), needs[""]
+        return (lambda ctx: ctx.values[base]), needs[""], self.indicator_refs[base]
 
     # -- rules
+
+    def _register_reference_operands(self, *parts: Any) -> None:
+        *operands, bars = parts
+        for operand, _, refs in operands:
+            if refs:
+                self.reference_operands.append((refs, operand, bars))
 
     def _rule(self, rule: Any, path: str) -> tuple[Rule | None, int]:
         if isinstance(rule, list):
@@ -574,6 +550,7 @@ class _Compiler:
                 return None, 0
             compare = _COMPARE[rule[1]]
             a, b = left[0], right[0]
+            self._register_reference_operands(left, right, 1)
 
             def comparison(ctx: EvalContext) -> np.ndarray:
                 x, y = np.asarray(a(ctx), dtype=float), np.asarray(b(ctx), dtype=float)
@@ -617,6 +594,7 @@ class _Compiler:
                     return None, 0
                 a, b = left[0], right[0]
                 above = key == "crosses_above"
+                self._register_reference_operands(left, right, 2)
 
                 def cross(ctx: EvalContext) -> np.ndarray:
                     shape = ctx.columns["close"].shape
@@ -682,6 +660,8 @@ class Evaluation:
     entry: np.ndarray  # bool, one per window
     exit: np.ndarray
     values: dict[str, np.ndarray]  # last-bar indicator values, one per window
+    # Per reference symbol: whether every rule operand reading it has a value, one per window.
+    reference_usable: dict[str, np.ndarray] = field(default_factory=dict)
 
 
 @dataclass
@@ -698,7 +678,8 @@ class Strategy:
     uses_sentiment: bool
     uses_fear_greed: bool
     references: tuple[str, ...]  # symbols whose candles the rules read, sorted
-    reference_warmup: int  # consecutive reference bars the rules need for a value; 0 without references
+    reference_series: tuple[tuple[str, str], ...]  # (symbol, column) pairs the rules read, sorted
+    _reference_operands: list[tuple[frozenset[str], Operand, int]]
     _order: list[Callable[[EvalContext], None]]
     _entry: Rule
     _exit: Rule | None
@@ -734,7 +715,17 @@ class Strategy:
                     values[f"{name}.{output}"] = np.asarray(array)[-1]
             else:
                 values[name] = np.asarray(value)[-1]
-        return Evaluation(entry, exit_, values)
+        return Evaluation(entry, exit_, values, self._reference_usable(ctx, entry.shape))
+
+    def _reference_usable(self, ctx: EvalContext, shape: tuple[int, ...]) -> dict[str, np.ndarray]:
+        """Per reference symbol: every rule operand that reads it has a value on the bars its rule compares."""
+        usable = {symbol: np.ones(shape, dtype=bool) for symbol in self.references}
+        for symbols, operand, bars in self._reference_operands:
+            value = np.broadcast_to(np.asarray(operand(ctx), dtype=float), ctx.columns["close"].shape)
+            present = ~np.isnan(value[-bars:]).any(axis=0)
+            for symbol in symbols:
+                usable[symbol] &= present
+        return usable
 
 
 def compile_spec(spec: Any, expected_name: str | None = None) -> Strategy:

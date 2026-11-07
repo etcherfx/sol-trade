@@ -10,7 +10,7 @@ marked on that capital at every close. Nothing here calls the Solana RPC.
 """
 
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -44,6 +44,39 @@ def compute_signals(
     given; a referenced symbol with no stored candles raises
     :class:`~sol_trade.history.MissingReference`.
     """
+    entry = np.zeros(len(frame), dtype=bool)
+    exit_ = np.zeros(len(frame), dtype=bool)
+    for bars, result in _evaluate_frame(strategy, frame, symbol, sentiment, fear_greed, references):
+        entry[bars] = result.entry
+        exit_[bars] = result.exit
+    return entry, exit_
+
+
+def reference_usable(
+    strategy: Strategy, frame: pd.DataFrame, references: Callable[..., Any] | None = None
+) -> dict[str, np.ndarray]:
+    """Per reference symbol and bar of ``frame``: every rule operand reading it has a value there.
+
+    Bars without a full window of history are False. This is what a rule
+    that reads the reference actually sees, so a gap inside an indicator's
+    window counts as missing.
+    """
+    usable = {s: np.zeros(len(frame), dtype=bool) for s in strategy.references}
+    for bars, result in _evaluate_frame(strategy, frame, None, None, None, references):
+        for symbol, flags in result.reference_usable.items():
+            usable[symbol][bars] = flags
+    return usable
+
+
+def _evaluate_frame(
+    strategy: Strategy,
+    frame: pd.DataFrame,
+    symbol: str | None,
+    sentiment: Callable[..., Any] | None,
+    fear_greed: Callable[..., Any] | None,
+    references: Callable[..., Any] | None,
+) -> Iterator[tuple[slice, Any]]:
+    """Evaluate every full window of ``frame`` in chunks; yields the bars each result covers."""
     if references is None and strategy.references:
         references = history.load_references(strategy.references, strategy.timeframe)
     if sentiment is None and strategy.uses_sentiment:
@@ -51,11 +84,9 @@ def compute_signals(
     if fear_greed is None and strategy.uses_fear_greed:
         from sol_trade.fear_greed import values as fear_greed
     n = len(frame)
-    entry = np.zeros(n, dtype=bool)
-    exit_ = np.zeros(n, dtype=bool)
     length = strategy.lookback
     if n < length:
-        return entry, exit_
+        return
     series = {c: frame[c].to_numpy(dtype=float) for c in COLUMNS}
     times = frame["ts"].to_numpy(dtype=float)
     for start in range(0, n - length + 1, _CHUNK):
@@ -63,9 +94,7 @@ def compute_signals(
         span = slice(start, stop + length - 1)
         bars = {c: windows(v[span], length) for c, v in series.items()}
         result = strategy.evaluate(bars, windows(times[span], length), symbol, sentiment, fear_greed, references)
-        entry[start + length - 1 : stop + length - 1] = result.entry
-        exit_[start + length - 1 : stop + length - 1] = result.exit
-    return entry, exit_
+        yield slice(start + length - 1, stop + length - 1), result
 
 
 def sizing() -> tuple[float, float]:

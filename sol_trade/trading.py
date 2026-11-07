@@ -303,7 +303,7 @@ def _report_absent_references(symbol: str, absent: list[str]) -> None:
         else None
     )
     if message and _reference_errors.get(symbol) != message:
-        log_general.error(message)
+        log_general.error(f"{message}; new entries are blocked until they are")
     elif not message and symbol in _reference_errors:
         log_general.info(f"{symbol}: reference candles are stored again")
     if message:
@@ -323,8 +323,10 @@ def run_symbol(
 
     A strategy that reads other symbols' candles never waits for them. Each
     bar is decided on the reference bars stored at that moment, and any
-    reference bar missing then is recorded, so backtests and replays read it
-    as missing too, even after it arrives.
+    value of a series it reads that is missing then is recorded, so
+    backtests and replays read it as missing too, even after it arrives.
+    While a reference has no stored bar at all in the window, the bars open
+    no positions; exits, stops and trailing stops run as usual.
     """
     now = time.time() if now is None else now
     risk = strategy.risk
@@ -344,8 +346,10 @@ def run_symbol(
         )
         if len(new):
             first = max(int(new[0]) - strategy.lookback + 1, 0)
-            references.record_unavailable(ts[first : int(new[-1]) + 1] + period, now)
-        _report_absent_references(symbol, references.absent())
+            references.record_unavailable(ts[first : int(new[-1]) + 1] + period, strategy.reference_series, now)
+        absent = references.absent()
+        _report_absent_references(symbol, absent)
+        allow_entry = allow_entry and not absent
     entry, exit_ = backtest.compute_signals(strategy, frame, symbol, references=references)
     is_live = book.name == ledger.LIVE
     for i in new:

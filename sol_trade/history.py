@@ -18,7 +18,7 @@ import pandas as pd
 from sol_trade import data_source
 from sol_trade.config import config
 from sol_trade.log import log_general
-from sol_trade.spec import COLUMNS, timeframe_seconds
+from sol_trade.spec import timeframe_seconds
 
 # Restart incremental updates this many bars before the newest stored bar, so
 # a bar stored while it was still forming (older versions did) gets repaired.
@@ -416,13 +416,14 @@ def _unavailable_connect() -> sqlite3.Connection:
     conn = data_source._connect()
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS reference_unavailable (
+        CREATE TABLE IF NOT EXISTS reference_series_unavailable (
             exchange    TEXT    NOT NULL,
             symbol      TEXT    NOT NULL,
             timeframe   TEXT    NOT NULL,
+            series      TEXT    NOT NULL,
             close_ts    INTEGER NOT NULL,
             recorded_at REAL    NOT NULL,
-            PRIMARY KEY (exchange, symbol, timeframe, close_ts)
+            PRIMARY KEY (exchange, symbol, timeframe, series, close_ts)
         )
         """
     )
@@ -474,35 +475,40 @@ class References:
 
     timeframe: str
     frames: dict[str, pd.DataFrame]
-    unavailable: dict[str, np.ndarray] = field(default_factory=dict)
+    unavailable: dict[tuple[str, str], np.ndarray] = field(default_factory=dict)  # (symbol, column) -> closes
 
     def __call__(self, symbol: str, column: str, closes: np.ndarray) -> np.ndarray:
         return align(
-            self.frames[symbol], timeframe_seconds(self.timeframe), closes, column, self.unavailable.get(symbol)
+            self.frames[symbol], timeframe_seconds(self.timeframe), closes, column,
+            self.unavailable.get((symbol, column)),
         )
 
     def absent(self) -> list[str]:
         """Symbols with no bar at all among the loaded ones."""
         return [s for s, f in self.frames.items() if f.empty]
 
-    def record_unavailable(self, closes: np.ndarray, now: float | None = None) -> dict[str, int]:
-        """Store every close time in ``closes`` a reference has no complete bar for.
+    def record_unavailable(
+        self, closes: np.ndarray, series: tuple[tuple[str, str], ...] | list[tuple[str, str]],
+        now: float | None = None,
+    ) -> dict[tuple[str, str], int]:
+        """Store every close time in ``closes`` a requested ``(symbol, column)`` has no value for.
 
-        The live loop calls this before it decides bars with these close
-        times, so a bar that arrives later is still read as missing by every
-        backtest, held-out period and paper replay. Returns the new count per
-        symbol.
+        Only the columns a strategy reads count: a bar with a ``close`` but no
+        ``volume`` is available to a rule on ``close``. The live loop calls
+        this before it decides bars with these close times, so a value that
+        arrives later is still read as missing by every backtest, held-out
+        period and paper replay. Returns the new count per series.
         """
         now = time.time() if now is None else now
         period = timeframe_seconds(self.timeframe)
         closes = np.unique(np.asarray(closes, dtype=float).ravel())
-        recorded: dict[str, int] = {}
-        for symbol, frame in self.frames.items():
+        recorded: dict[tuple[str, str], int] = {}
+        for symbol, column in series:
+            frame = self.frames[symbol]
             index, found = _bar_index(frame, period, closes)
             if found.any():
-                rows = frame[list(COLUMNS)].to_numpy(dtype=float)[index]
-                found &= ~np.isnan(rows).any(axis=1)
-            known = self.unavailable.get(symbol, np.zeros(0))
+                found &= ~np.isnan(frame[column].to_numpy(dtype=float)[index])
+            known = self.unavailable.get((symbol, column), np.zeros(0))
             missing = closes[~found & ~np.isin(closes, known)]
             if not missing.size:
                 continue
@@ -510,29 +516,32 @@ class References:
             conn = _unavailable_connect()
             try:
                 conn.executemany(
-                    "INSERT OR IGNORE INTO reference_unavailable VALUES (?, ?, ?, ?, ?)",
-                    [(source.exchange, source.pair, self.timeframe, int(t), now) for t in missing],
+                    "INSERT OR IGNORE INTO reference_series_unavailable VALUES (?, ?, ?, ?, ?, ?)",
+                    [(source.exchange, source.pair, self.timeframe, column, int(t), now) for t in missing],
                 )
                 conn.commit()
             finally:
                 conn.close()
-            self.unavailable[symbol] = np.union1d(known, missing)
-            recorded[symbol] = int(missing.size)
+            self.unavailable[(symbol, column)] = np.union1d(known, missing)
+            recorded[(symbol, column)] = int(missing.size)
         return recorded
 
 
-def load_unavailable(source: Source, timeframe: str) -> np.ndarray:
-    """Close times the live loop decided without a bar of ``source``, sorted."""
+def load_unavailable(source: Source, timeframe: str) -> dict[str, np.ndarray]:
+    """Per column: close times the live loop decided without a value of ``source``, sorted."""
     conn = _unavailable_connect()
     try:
         rows = conn.execute(
-            "SELECT close_ts FROM reference_unavailable WHERE exchange = ? AND symbol = ? AND timeframe = ? "
-            "ORDER BY close_ts",
+            "SELECT series, close_ts FROM reference_series_unavailable "
+            "WHERE exchange = ? AND symbol = ? AND timeframe = ? ORDER BY close_ts",
             (source.exchange, source.pair, timeframe),
         ).fetchall()
     finally:
         conn.close()
-    return np.array([r[0] for r in rows], dtype=float)
+    by_column: dict[str, list[float]] = {}
+    for column, close_ts in rows:
+        by_column.setdefault(column, []).append(float(close_ts))
+    return {column: np.array(stamps) for column, stamps in by_column.items()}
 
 
 def load_references(
@@ -547,7 +556,8 @@ def load_references(
         if required and frame.empty:
             raise MissingReference(symbol, timeframe)
         frames[symbol] = frame
-        unavailable[symbol] = load_unavailable(source, timeframe)
+        for column, stamps in load_unavailable(source, timeframe).items():
+            unavailable[(symbol, column)] = stamps
     return References(timeframe, frames, unavailable)
 
 

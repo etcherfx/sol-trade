@@ -1,5 +1,7 @@
 """Strategies that read another symbol's candles: grammar, alignment, research and the live loop."""
 
+import time
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -37,6 +39,11 @@ RELATIVE = {
     "exit": {"crosses_below": ["fast", "slow"]},
 }
 MODEL = CostModel("TKN", "measured", ((25.0, 10.0), (250.0, 20.0)), 0.01)
+
+
+@pytest.fixture(autouse=True)
+def _no_logged_reference_errors(monkeypatch):
+    monkeypatch.setattr(trading, "_reference_errors", {})
 
 
 def _frame(ts, close):
@@ -167,7 +174,7 @@ def test_reference_data_outside_the_evaluated_period_is_insufficient_evidence():
     _store_ref(market.iloc[cut.holdout_start :])  # only the held-out period has REF bars
     result = evaluation.evaluate(strategy, "TKN", market, FREE)
     assert result["verdict"] == evaluation.INSUFFICIENT
-    assert result["reasons"][0].startswith("reference REF has no run of 1 1h bars ending in the selection period")
+    assert result["reasons"][0].startswith("reference REF gives the rules no usable value in the selection period")
     assert result["data"]["references"]["REF"]["coverage"] == 0.0
     assert evaluation.trials("TKN") == []
 
@@ -179,34 +186,64 @@ def test_reference_data_missing_from_the_held_out_period_is_insufficient_evidenc
     _store_ref(market.iloc[: cut.holdout_start])  # REF stops where the held-out period starts
     held = evaluation.holdout(strategy, "TKN", market, FREE)
     assert held["verdict"] == evaluation.INSUFFICIENT and not held["passed"]
-    assert held["reasons"][0].startswith("reference REF has no run of 1 1h bars ending in the held-out period")
+    assert held["reasons"][0].startswith("reference REF gives the rules no usable value in the held-out period")
     assert held["references"]["REF"]["usable_bars"] == 0
 
 
-def test_reference_indicators_need_their_warm_up_in_the_evaluated_period():
+def test_an_indicator_that_never_has_a_value_over_reference_gaps_is_insufficient_evidence():
     market = _market()
-    _store_ref(market.iloc[::2])  # every other bar: values, but never two in a row
-    slow = {**SPEC, "name": "swing_rs", "lookback": 60,
-            "indicators": {**SPEC["indicators"], "rs": {"fn": "ema", "period": 50, "input": REF_CLOSE}},
-            "entry": {"all": [SPEC["entry"], ["rs", ">", 0]]}}
-    strategy = spec.compile_spec(slow)
-    assert strategy.reference_warmup == 50
+    _store_ref(market.drop(index=market.index[::20]))  # a bar missing every 20: present 95% of the time
+    gappy = {**SPEC, "name": "swing_rs", "lookback": 30,
+             "indicators": {**SPEC["indicators"], "rs": {"fn": "ema", "period": 12, "input": REF_CLOSE}},
+             "entry": {"any": [SPEC["entry"], ["rs", ">", 0]]}}  # the first branch trades without REF
+    strategy = spec.compile_spec(gappy)
+    usable = backtest.reference_usable(strategy, market)["REF"]
+    assert not usable.any()  # every 30-bar window holds a gap after the EMA's seed, so it ends missing
     result = evaluation.evaluate(strategy, "TKN", market, FREE, record=False)
     assert result["verdict"] == evaluation.INSUFFICIENT
-    assert result["reasons"][0].startswith("reference REF has no run of 50 1h bars")
-    # A rule that reads one reference bar has usable bars in the same data; gaps there stay missing values.
+    assert result["reasons"][0].startswith("reference REF gives the rules no usable value in the selection period")
+    info = result["data"]["references"]["REF"]
+    assert info["coverage"] == pytest.approx(0.95, abs=0.01) and info["usable_bars"] == 0
+    # A rule on the reference bar itself is usable in the same data; the gaps stay missing values.
     filtered = evaluation.evaluate(spec.compile_spec(_with_ref_filter(SPEC)), "TKN", market, FREE, record=False)
-    info = filtered["data"]["references"]["REF"]
-    assert info["coverage"] == pytest.approx(0.5, abs=0.01) and info["usable_bars"] > 0
+    assert filtered["data"]["references"]["REF"]["usable_bars"] > 0
     assert not any("reference" in r for r in filtered["reasons"])
 
 
-def test_reference_warmup_follows_the_rules_that_read_a_reference():
-    assert spec.compile_spec(RELATIVE).reference_warmup == 13  # ema 12 of the ratio, +1 for the cross
-    assert spec.compile_spec(_with_ref_filter(SPEC)).reference_warmup == 1
-    assert spec.compile_spec(SPEC).reference_warmup == 0
-    shifted = {**SPEC, "entry": [{"shift": [REF_CLOSE, 5]}, ">", 0]}
-    assert spec.compile_spec(shifted).reference_warmup == 6
+def test_usable_follows_the_bars_each_rule_compares(monkeypatch):
+    monkeypatch.setattr(config(), "primary_mint_symbol", "QUOTE")
+    ts = T0 + np.arange(40) * PERIOD
+    own = _frame(ts, np.full(40, 2.0))
+    refs = history.References("1m", {"REF": _frame(np.delete(ts, 20), np.full(39, 3.0))})
+
+    def unusable(entry):
+        strategy = spec.compile_spec({"schema": 1, "name": "u", "timeframe": "1m", "lookback": 8, "entry": entry})
+        return np.flatnonzero(~backtest.reference_usable(strategy, own, refs)["REF"][7:]) + 7
+
+    np.testing.assert_array_equal(unusable([REF_CLOSE, ">", 0]), [20])
+    np.testing.assert_array_equal(unusable([{"shift": [REF_CLOSE, 5]}, ">", 0]), [25])
+    np.testing.assert_array_equal(unusable({"crosses_above": [REF_CLOSE, 1]}), [20, 21])  # this bar and the last
+    assert backtest.reference_usable(spec.compile_spec(SPEC), _market(100)) == {}
+
+
+def test_reference_inputs_take_the_validated_parameter_defaults():
+    strategy = spec.compile_spec({**SPEC, "name": "rsi_ref", "indicators": {
+        **SPEC["indicators"], "r": {"fn": "rsi", "period": None, "input": REF_CLOSE},  # null: period 14
+    }, "entry": ["r", ">", 50]})
+    market = _market(200)
+    usable = backtest.reference_usable(strategy, market, history.References("1h", {"REF": market}))["REF"]
+    assert usable[strategy.lookback - 1 :].all()
+
+
+@pytest.mark.parametrize("input_series", ["close", REF_CLOSE])
+def test_shared_indicator_dependencies_compile_once(input_series):
+    indicators = {**SPEC["indicators"], "i0": {"fn": "sma", "period": 1, "input": input_series}}
+    for i in range(1, 60):  # each level reads the one before twice: 2**59 paths if expanded
+        indicators[f"i{i}"] = {"fn": "sma", "period": 1, "input": {"add": [f"i{i - 1}", f"i{i - 1}"]}}
+    started = time.perf_counter()
+    strategy = spec.compile_spec({**SPEC, "name": "chain", "indicators": indicators, "entry": ["i59", ">", 0]})
+    assert time.perf_counter() - started < 2
+    assert strategy.references == (() if input_series == "close" else ("REF",))
 
 
 # ------------------------------------------------------- missing reference values
@@ -235,20 +272,47 @@ def test_every_comparison_with_a_missing_reference_is_false(monkeypatch, entry, 
     np.testing.assert_array_equal(flags, expected)
 
 
+CLOSE_ONLY = [("REF", "close")]
+
+
 def test_bars_decided_without_a_reference_stay_missing_after_it_arrives(monkeypatch):
     monkeypatch.setattr(config(), "primary_mint_symbol", "QUOTE")
     stamps = T0 + np.array([0, 1, 3]) * PERIOD  # the bar opening at T0 + 2 periods is late
     _store_ref(_frame(stamps, [1.0, 2.0, 4.0]), "1m")
     closes = T0 + np.array([2, 3, 4], dtype=float) * PERIOD
     refs = history.load_references(("REF",), "1m")
-    assert refs.record_unavailable(closes) == {"REF": 1}
-    assert refs.record_unavailable(closes) == {}  # recorded once
+    assert refs.record_unavailable(closes, CLOSE_ONLY) == {("REF", "close"): 1}
+    assert refs.record_unavailable(closes, CLOSE_ONLY) == {}  # recorded once
     _store_ref(_frame([T0 + 2 * PERIOD], [3.0]), "1m")  # the late bar arrives
 
     later = history.load_references(("REF",), "1m")
     np.testing.assert_array_equal(later("REF", "close", closes), [2.0, np.nan, 4.0])
     unmarked = history.align(later.frames["REF"], PERIOD, closes, "close")
     np.testing.assert_array_equal(unmarked, [2.0, 3.0, 4.0])
+
+
+def test_only_the_series_a_strategy_reads_decide_availability(monkeypatch):
+    monkeypatch.setattr(config(), "primary_mint_symbol", "QUOTE")
+    ts = T0 + np.arange(60) * PERIOD
+    ref = _frame(ts, 3.0 + np.arange(60) % 4)
+    ref.loc[30, "volume"] = np.nan  # a bar with a close but no volume
+    _store_ref(ref, "1m")
+    own = _frame(ts, np.full(60, 2.0))
+    strategy = spec.compile_spec({"schema": 1, "name": "close_only", "timeframe": "1m", "lookback": 5,
+                                  "indicators": {"avg": {"fn": "sma", "period": 3, "input": REF_CLOSE}},
+                                  "entry": ["avg", ">", 4]})
+    assert strategy.reference_series == (("REF", "close"),)
+    before = np.concatenate(backtest.compute_signals(strategy, own, "TKN"))
+    closes = ts + PERIOD
+    refs = history.load_references(("REF",), "1m")
+    assert refs.record_unavailable(closes, strategy.reference_series) == {}  # the missing volume isn't read
+    np.testing.assert_array_equal(np.concatenate(backtest.compute_signals(strategy, own, "TKN")), before)
+    # A rule on volume records that bar, and the close stays readable.
+    assert refs.record_unavailable(closes, [("REF", "volume")]) == {("REF", "volume"): 1}
+    later = history.load_references(("REF",), "1m")
+    assert np.isnan(later("REF", "volume", closes[30:31])).all()
+    assert later("REF", "close", closes[30:31])[0] == ref["close"].iat[30]
+    np.testing.assert_array_equal(np.concatenate(backtest.compute_signals(strategy, own, "TKN")), before)
 
 
 # ------------------------------------------------------------- live loop
@@ -330,7 +394,7 @@ def test_live_and_replay_trade_identically_through_reference_lag_outage_and_reco
     for now in _poll(book, strategy, clock, 40, 299):
         assert book.state("TKN").last_bar_ts == int(now // PERIOD) * PERIOD - PERIOD  # never held back
     last = book.state("TKN").last_bar_ts or 0
-    marked = history.load_unavailable(history.source_for("REF"), "1m")
+    marked = history.load_unavailable(history.source_for("REF"), "1m")["close"]
     assert marked.size >= 20
 
     # The venue recovers and the missed bars are backfilled; replays still read them as missing.
@@ -381,13 +445,39 @@ def test_stops_keep_running_while_the_reference_is_down(monkeypatch):
     assert "REF" in trading._reference_errors["TKN"]  # an absent reference is reported, not hidden
 
 
+@pytest.mark.parametrize("book_name", [ledger.LIVE, "dry_run"])
+def test_an_absent_reference_blocks_entries_but_not_exits(monkeypatch, book_name):
+    down = {"on": True}
+    book, _, clock = _live(monkeypatch, book_name, n_bars=80, down=lambda now: down["on"])
+    # The first branch enters on every bar without REF; offline evaluation would refuse this strategy.
+    either = spec.compile_spec({**RELATIVE, "name": "either", "lookback": 30,
+                                "entry": {"any": [["close", ">", 0], {"not": [REF_CLOSE, "<", 0]}]},
+                                "exit": ["close", ">", 0]})
+    for _ in _poll(book, either, clock, 40, 45):
+        pass
+    assert book.fills == [] and book.state("TKN").pending is None
+    assert "REF" in trading._reference_errors["TKN"]
+
+    # An open position still gets its exit while REF is absent.
+    book.state("TKN").position = Position("TKN", either.name, either.hash, 100.0, 1.0, 100.0, T0 + 40 * PERIOD)
+    for _ in _poll(book, either, clock, 45, 47):
+        pass
+    assert [f.reason for f in book.fills] == ["signal"] and book.position("TKN") is None
+
+    # Once REF has bars again, the same rules enter.
+    down["on"] = False
+    for _ in _poll(book, either, clock, 47, 50):
+        pass
+    assert any(f.side == "buy" for f in book.fills)
+    assert "TKN" not in trading._reference_errors
+
+
 def test_a_dead_reference_is_reported_and_its_bars_stay_missing(monkeypatch):
     book, _, clock = _live(monkeypatch, "dry_run", n_bars=80, down=lambda now: True)
     clock["now"] = float(T0 + 60 * PERIOD + 1)
     view = trading.run_symbol(book, "TKN", spec.compile_spec(RELATIVE), now=clock["now"])
     assert view["bars"] == 1 and book.state("TKN").last_bar_ts == T0 + 59 * PERIOD
     assert np.isnan(view["values"]["fast"])
-    marked = history.load_unavailable(history.source_for("REF"), "1m")
+    marked = history.load_unavailable(history.source_for("REF"), "1m")["close"]
     assert marked[-1] == T0 + 60 * PERIOD and marked.size == RELATIVE["lookback"]
     assert "REF" in trading._reference_errors["TKN"]
-    trading._reference_errors.clear()

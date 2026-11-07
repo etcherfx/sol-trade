@@ -193,41 +193,43 @@ def _reference_info(
 ) -> tuple[dict[str, Any], list[str]]:
     """Per referenced symbol over bars ``[start, end)`` of ``frame``: source, stored range and coverage.
 
-    ``coverage`` is the share of those bars with a reference value;
-    ``usable_bars`` counts the bars whose last ``strategy.reference_warmup``
-    bars all have one, which the strategy's reference inputs need to have a
-    value at all. A reference with no usable bar there is a reason the
-    evidence is insufficient; gaps elsewhere stay missing values.
+    ``coverage`` is the share of those bars with a value of every series
+    the rules read from the symbol. ``usable_bars`` counts the bars where
+    every rule operand that reads it (an EMA of a ratio, say) has a value,
+    on the bars its rule compares. A reference with no usable bar there
+    is a reason the evidence is insufficient, even when another branch of
+    the rules could trade without it; gaps elsewhere stay missing values.
     """
     info: dict[str, Any] = {}
     reasons: list[str] = []
     refs = history.load_references(strategy.references, strategy.timeframe, required=False)
-    closes = frame["ts"].to_numpy(dtype=float) + strategy.period_seconds
-    need = max(strategy.reference_warmup, 1)
+    usable = backtest.reference_usable(strategy, frame, refs)
+    closes = frame["ts"].to_numpy(dtype=float)[start:end] + strategy.period_seconds
     backfill = f"run backfill --symbols {{symbol}} --timeframes {strategy.timeframe}"
     for symbol in strategy.references:
         ref = refs.frames[symbol]
         ts = ref["ts"]
-        present = np.isfinite(refs(symbol, "close", closes))
-        missing_before = np.concatenate([[0], np.cumsum(~present)])
-        bars = np.arange(start, end)
-        runs = bars[bars >= need - 1]
-        usable = int(((missing_before[runs + 1] - missing_before[runs + 1 - need]) == 0).sum())
+        columns = [column for s, column in strategy.reference_series if s == symbol]
+        present = np.ones(closes.shape, dtype=bool)
+        for column in columns:
+            present &= ~np.isnan(refs(symbol, column, closes))
+        usable_bars = int(usable[symbol][start:end].sum())
         info[symbol] = {
             "source": history.source_for(symbol).as_dict(),
+            "series": columns,
             "bars": len(ref),
             "first": _iso(int(ts.iat[0])) if len(ref) else None,
             "last": _iso(int(ts.iat[-1])) if len(ref) else None,
-            "coverage": round(float(present[start:end].mean()), 6) if end > start else 0.0,
-            "usable_bars": usable,
-            "unavailable_marked": len(refs.unavailable.get(symbol, ())),
+            "coverage": round(float(present.mean()), 6) if present.size else 0.0,
+            "usable_bars": usable_bars,
+            "unavailable_marked": {c: len(refs.unavailable.get((symbol, c), ())) for c in columns},
         }
         if ref.empty:
             reasons.append(str(history.MissingReference(symbol, strategy.timeframe)))
-        elif usable == 0:
+        elif usable_bars == 0:
             reasons.append(
-                f"reference {symbol} has no run of {need} {strategy.timeframe} bars ending in the {period_name}; "
-                + backfill.format(symbol=symbol)
+                f"reference {symbol} gives the rules no usable value in the {period_name}: every operand "
+                f"reading it is missing on all {end - start} bars; " + backfill.format(symbol=symbol)
             )
     return info, reasons
 
