@@ -163,6 +163,54 @@ def test_reference_candles_come_from_the_store_and_are_reported():
     assert filtered["rpc"] == {"calls": 0, "cu": 0}
 
 
+def test_a_references_depth_follows_its_venue_and_every_reader_switches_with_it(monkeypatch):
+    """A symbol only read as a reference can be pointed at a venue with deeper history via token_exchanges."""
+    market = _market(2000)
+    t0, hour = int(market["ts"].iat[0]), 3600
+    clock = {"now": float(t0 + 2000 * hour + 600)}  # bar 2000 is forming
+    # The default venue lists REF only for the last 600 bars; the deep one has all of them.
+    shallow = FakeExchange(make_ticks(600, seed=3), hour, lambda: clock["now"], t0=t0 + 1400 * hour, windowed=True)
+    shallow.id = "shallow"
+    deep = FakeExchange(make_ticks(2001, seed=4), hour, lambda: clock["now"], t0=t0)
+    deep.id = "deep"
+    venues = {"shallow": shallow, "deep": deep}
+    monkeypatch.setattr(data_source, "get_exchange", lambda exchange_id, **_: venues[exchange_id])
+    monkeypatch.setattr(config(), "data_exchange", "shallow")
+    monkeypatch.setattr(config(), "token_exchanges", {})
+    strategy = spec.compile_spec(_with_ref_filter(SPEC))
+    days = 2000 / 24
+
+    thin = history.backfill(["REF"], ["1h"], days=days, now=clock["now"])[0]
+    assert (thin["exchange"], thin["total"], thin["coverage"]) == ("shallow", 600, 0.3)
+    assert any("shallow history starts at" in note for note in thin["notes"])
+    info = evaluation.evaluate(strategy, "TKN", market, FREE, record=False)["data"]["references"]["REF"]
+    assert info["bars"] == 600 and info["coverage"] < 0.35
+
+    monkeypatch.setattr(config(), "token_exchanges", {"REF": {"exchange": "deep", "quote": "USD"}})
+    full = history.backfill(["REF"], ["1h"], days=days, now=clock["now"])[0]
+    assert (full["exchange"], full["pair"], full["total"], full["coverage"]) == ("deep", "REF/USD", 2000, 1.0)
+    assert full["notes"] == []
+    result = evaluation.evaluate(strategy, "TKN", market, FREE, record=False)
+    info = result["data"]["references"]["REF"]
+    assert info["source"] == {"exchange": "deep", "pair": "REF/USD", "price_proxy": True}
+    assert (info["bars"], info["coverage"]) == (2000, 1.0)
+    assert "PRICE_PROXY" not in result["flags"]  # the traded token's quote decides that, not a reference's
+    # One venue per series: the deep series holds only deep bars, and the shallow rows stay where they were.
+    stored = history.load_bars(history.source_for("REF"), "1h")
+    assert stored["close"].to_numpy() == pytest.approx([bar[-1] for bar in deep.ticks[:2000]])
+    assert len(history.load_bars(history.Source("shallow", "REF", config().primary_mint_symbol), "1h")) == 600
+
+    # The live loop reads and extends the same series research just read.
+    shallow.calls.clear()
+    clock["now"] += hour
+    live = history.refresh_references(("REF",), "1h", start=t0 + 1950 * hour, bars=50, now=clock["now"])
+    assert shallow.calls == []
+    assert live.frames["REF"]["ts"].iat[-1] == t0 + 2000 * hour  # the bar that was forming has closed
+    research = history.load_references(("REF",), "1h")
+    closes = live.frames["REF"]["ts"].to_numpy(dtype=float) + hour
+    np.testing.assert_array_equal(live("REF", "close", closes), research("REF", "close", closes))
+
+
 def _either(spec_dict):
     """Trades on its own bars alone; the reference branch can only add entries."""
     return {**spec_dict, "name": "swing_either", "entry": {"any": [spec_dict["entry"], [REF_CLOSE, ">", 1e9]]}}

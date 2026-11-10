@@ -318,6 +318,24 @@ def test_token_exchanges_take_an_exchange_and_quote(tmp_path):
             Config(config_path=_write(tmp_path, {**_PRIMARY, "token_exchanges": {"JUP": bad}}), dotenv_path=os.devnull)
 
 
+def test_a_source_for_a_symbol_only_read_as_a_reference_is_kept_and_reloaded(tmp_path, caplog):
+    """token_exchanges can point a reference symbol (not a traded token) at a deeper venue."""
+    import os
+
+    from sol_trade.config import Config
+
+    source = {"REF": {"exchange": "deep", "quote": "USD"}}
+    path = _write(tmp_path, _PRIMARY)
+    c = Config(config_path=path, dotenv_path=os.devnull)
+    assert c.token_exchanges == {}
+    _write(tmp_path, {**_PRIMARY, "token_exchanges": source})
+    c._config_mtime = 0.0
+    with caplog.at_level("WARNING", logger="general_logger"):
+        c.maybe_reload_config()
+    assert c.token_exchanges == source
+    assert "token_exchanges references unknown token(s): ['REF']" in caplog.text  # a warning, not a refusal
+
+
 _SECRET_FIELDS = {
     "private_key": ("SOLTRADE_PRIVATE_KEY", "file-private-key-value"),
     "jupiter_api_key": ("SOLTRADE_JUPITER_API_KEY", "file-jupiter-key-value"),
