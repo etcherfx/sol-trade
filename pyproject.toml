@@ -5,7 +5,7 @@ description = "A Solana trading bot that runs your strategies and swaps through 
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "ccxt==4.5.90",
+    "ccxt==4.5.91",
     "defusedxml>=0.7.1",
     "httpx==0.28.1",
     "pandas==3.1.0",
