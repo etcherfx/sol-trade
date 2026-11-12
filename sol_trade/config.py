@@ -405,7 +405,7 @@ class Config:
                     '{"exchange": "<ccxt id>", "quote": "<symbol>"} with non-empty strings'
                 )
         # A key that names no configured token is the candle source of a symbol
-        # strategies only read (a `ref` operand such as BTC). One that differs
+        # strategies only read (a `ref` operand). One that differs
         # from a configured symbol only in case is a typo: that token would
         # silently keep the default source.
         known = {*self.secondary_mint_symbols, *self.token_mints, self.primary_mint_symbol}

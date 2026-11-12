@@ -348,15 +348,15 @@ def test_a_source_whose_symbol_differs_from_a_token_only_in_case_warns(tmp_path,
         {
             **_PRIMARY,
             "secondary_mints": ["MINT_A"],
-            "secondary_mint_symbols": ["POPCAT"],
-            "token_exchanges": {"popcat": "mexc", "BTC": "coinbase"},
+            "secondary_mint_symbols": ["AAA"],
+            "token_exchanges": {"aaa": "mexc", "REF": "coinbase"},
         },
     )
     with caplog.at_level("INFO", logger="general_logger"):
         Config(config_path=path, dotenv_path=os.devnull)
     warnings = [r.message for r in caplog.records if r.levelname == "WARNING" and "token_exchanges" in r.message]
-    assert warnings == ["token_exchanges.popcat matches no configured token; did you mean POPCAT?"]
-    assert "token_exchanges sets the candle source of reference-only symbol(s): ['BTC']" in caplog.text
+    assert warnings == ["token_exchanges.aaa matches no configured token; did you mean AAA?"]
+    assert "token_exchanges sets the candle source of reference-only symbol(s): ['REF']" in caplog.text
 
 
 _SECRET_FIELDS = {
