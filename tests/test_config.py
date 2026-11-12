@@ -330,10 +330,33 @@ def test_a_source_for_a_symbol_only_read_as_a_reference_is_kept_and_reloaded(tmp
     assert c.token_exchanges == {}
     _write(tmp_path, {**_PRIMARY, "token_exchanges": source})
     c._config_mtime = 0.0
-    with caplog.at_level("WARNING", logger="general_logger"):
+    with caplog.at_level("INFO", logger="general_logger"):
         c.maybe_reload_config()
     assert c.token_exchanges == source
-    assert "token_exchanges references unknown token(s): ['REF']" in caplog.text  # a warning, not a refusal
+    assert not [r for r in caplog.records if r.levelname == "WARNING" and "token_exchanges" in r.message]
+    assert "token_exchanges sets the candle source of reference-only symbol(s): ['REF']" in caplog.text
+
+
+def test_a_source_whose_symbol_differs_from_a_token_only_in_case_warns(tmp_path, caplog):
+    """A misspelled token_exchanges key would silently leave the real token on data_exchange."""
+    import os
+
+    from sol_trade.config import Config
+
+    path = _write(
+        tmp_path,
+        {
+            **_PRIMARY,
+            "secondary_mints": ["MINT_A"],
+            "secondary_mint_symbols": ["POPCAT"],
+            "token_exchanges": {"popcat": "mexc", "BTC": "coinbase"},
+        },
+    )
+    with caplog.at_level("INFO", logger="general_logger"):
+        Config(config_path=path, dotenv_path=os.devnull)
+    warnings = [r.message for r in caplog.records if r.levelname == "WARNING" and "token_exchanges" in r.message]
+    assert warnings == ["token_exchanges.popcat matches no configured token; did you mean POPCAT?"]
+    assert "token_exchanges sets the candle source of reference-only symbol(s): ['BTC']" in caplog.text
 
 
 _SECRET_FIELDS = {

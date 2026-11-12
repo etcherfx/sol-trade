@@ -404,13 +404,26 @@ class Config:
                     f"token_exchanges.{symbol} must be an exchange id or "
                     '{"exchange": "<ccxt id>", "quote": "<symbol>"} with non-empty strings'
                 )
-        unknown_exchanges = [
-            symbol for symbol in self.token_exchanges
-            if symbol not in self.secondary_mint_symbols and symbol not in self.token_mints
-        ]
-        if unknown_exchanges:
-            log_general.warning(
-                f"token_exchanges references unknown token(s): {unknown_exchanges}"
+        # A key that names no configured token is the candle source of a symbol
+        # strategies only read (a `ref` operand such as BTC). One that differs
+        # from a configured symbol only in case is a typo: that token would
+        # silently keep the default source.
+        known = {*self.secondary_mint_symbols, *self.token_mints, self.primary_mint_symbol}
+        by_case = {symbol.casefold(): symbol for symbol in known}
+        reference_only = []
+        for symbol in self.token_exchanges:
+            if symbol in known:
+                continue
+            match = by_case.get(symbol.casefold())
+            if match:
+                log_general.warning(
+                    f"token_exchanges.{symbol} matches no configured token; did you mean {match}?"
+                )
+            else:
+                reference_only.append(symbol)
+        if reference_only:
+            log_general.info(
+                f"token_exchanges sets the candle source of reference-only symbol(s): {reference_only}"
             )
 
         if not self.private_key or self.private_key == "":
