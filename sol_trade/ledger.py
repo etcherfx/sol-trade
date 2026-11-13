@@ -462,7 +462,7 @@ def _legacy_ts(value: Any) -> int:
         stamp = pd.Timestamp(value)
     except (TypeError, ValueError):
         stamp = None
-    if stamp is None or pd.isna(stamp):
+    if not isinstance(stamp, pd.Timestamp):  # also NaT, which is not a Timestamp
         return int(datetime.now(UTC).timestamp())
     if stamp.tzinfo is None:
         stamp = stamp.tz_localize("UTC")

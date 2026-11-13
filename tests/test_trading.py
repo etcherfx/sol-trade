@@ -165,6 +165,19 @@ def test_legacy_csv_positions_are_imported_once(tmp_path):
     assert ledger.migrate_legacy_csv() == []  # nothing left to import
 
 
+@pytest.mark.parametrize("value", [None, "", "not a time", pd.NaT])
+def test_unreadable_legacy_open_time_falls_back_to_now(value):
+    before = int(datetime.now(UTC).timestamp())
+    assert before <= ledger._legacy_ts(value) <= int(datetime.now(UTC).timestamp())
+
+
+@pytest.mark.parametrize(
+    "value", ["2026-08-10 12:00:00", "2026-08-10T14:00:00+02:00", pd.Timestamp("2026-08-10 12:00:00")]
+)
+def test_legacy_open_time_is_naive_utc_or_its_own_instant(value):
+    assert ledger._legacy_ts(value) == int(datetime(2026, 8, 10, 12, tzinfo=UTC).timestamp())
+
+
 def test_weight_cap(monkeypatch):
     monkeypatch.setattr(config(), "secondary_mint_symbols", ["SOL", "JUP"])
     monkeypatch.setattr(config(), "secondary_weights", [0.6, 0.4])
