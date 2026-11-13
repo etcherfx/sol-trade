@@ -610,18 +610,17 @@ def perform_analysis(state: UIState) -> None:
     total_account_value = _full_holdings_total or float(current_value or 0.0)
     reserved_fees = 0.0 if _dry_run else minimum_sol_needed()
 
-    state.update(
-        lambda s: (
-            setattr(s, "primary_balance", float(book.cash or 0.0)),
-            setattr(s, "portfolio_value", float(current_value or 0.0)),
-            setattr(s, "total_profit", float(total_profit or 0.0)),
-            setattr(s, "reserved_fees", reserved_fees),
-            setattr(s, "tokens", tokens),
-            setattr(s, "full_holdings", full_holdings),
-            setattr(s, "total_account_value", total_account_value),
-            setattr(s, "last_refresh", datetime.now(UTC).strftime("%H:%M:%S")),
-        )
-    )
+    def _apply(s: UIState) -> None:
+        s.primary_balance = float(book.cash or 0.0)
+        s.portfolio_value = float(current_value or 0.0)
+        s.total_profit = float(total_profit or 0.0)
+        s.reserved_fees = reserved_fees
+        s.tokens = tokens
+        s.full_holdings = full_holdings
+        s.total_account_value = total_account_value
+        s.last_refresh = datetime.now(UTC).strftime("%H:%M:%S")
+
+    state.update(_apply)
 
 
 def _beat(error: str | None) -> None:
@@ -664,6 +663,7 @@ def start_trading(state: UIState, dry_run: bool = False) -> None:
         global _baseline_key
         state.update(lambda s: setattr(s, "running", True))
         try:
+            assert _stop_event is not None  # set by start_trading before the thread starts
             while not _stop_event.is_set():
                 prev_tokens = _token_set_snapshot()
                 config().maybe_reload_config()

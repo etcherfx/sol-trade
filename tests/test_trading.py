@@ -225,6 +225,12 @@ def test_dry_run_cycle_uses_the_virtual_book(dry_run_market, monkeypatch):
     assert [t.symbol for t in snapshot.tokens] == ["SOL"]  # JUP's strategy is missing: skipped
     assert "missing_one" in trading._strategy_errors["JUP"]
     assert snapshot.primary_balance == pytest.approx(config().risk["max_live_capital"])
+    assert snapshot.portfolio_value > 0.0
+    assert isinstance(snapshot.total_profit, float)
+    assert snapshot.reserved_fees == 0.0  # a dry run reserves no fees
+    assert snapshot.total_account_value > 0.0
+    assert isinstance(snapshot.full_holdings, list)
+    assert snapshot.last_refresh != "-"
     assert ledger.load_state(ledger.DRY_RUN, "SOL").last_bar_ts is not None
 
 
