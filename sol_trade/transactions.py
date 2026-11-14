@@ -364,6 +364,7 @@ async def perform_swap(
     balance_before = _input_balance(sent_token_mint)
 
     order = execute_result = None
+    output_scale: int | None = None
     is_tx_successful = False
 
     for i in range(3):
@@ -380,6 +381,10 @@ async def perform_swap(
             if attempts is not None:
                 attempts.append(attempt)
             try:
+                # Resolve the output decimals before any order exists: the
+                # lookup can fail, and after the swap lands nothing may raise.
+                if output_scale is None:
+                    output_scale = 10 ** decimals(output_token_mint)
                 order = await create_order(
                     sent_amount, sent_token_mint, output_token_mint
                 )
@@ -432,9 +437,6 @@ async def perform_swap(
         )
         return None
 
-    # Calculate the actual amounts from the execution result
-    output_decimals = 10 ** decimals(output_token_mint)
-
     # The swap has landed, so an odd amount must not raise here. Only a
     # successful execute reports a fill; after a lost response the result
     # may be left over from an earlier failed attempt.
@@ -451,7 +453,8 @@ async def perform_swap(
         )
         output_amount = 0
 
-    bought_amount = output_amount / output_decimals
+    assert output_scale is not None  # resolved before the first order
+    bought_amount = output_amount / output_scale
     
     log_transaction.info(
         f"SolTrade sold {sent_amount} {sent_token_symbol} for {bought_amount:.2f} {output_token_symbol}."

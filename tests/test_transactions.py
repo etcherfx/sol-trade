@@ -316,3 +316,68 @@ def test_perform_swap_ignores_a_failed_attempt_fill_after_a_lost_response(monkey
 
     # The landed order's quote, not the failed attempt's leftover 999.
     assert result == {"out_amount": 8.0, "sent_amount": 1.0}
+
+
+def test_perform_swap_sends_no_order_when_output_decimals_fail(monkeypatch):
+    import asyncio
+
+    from sol_trade import transactions
+
+    sent = []
+
+    async def fake_create(*args, **kwargs):
+        sent.append("create")
+        return {"requestId": "r1", "outAmount": "7"}
+
+    async def fake_execute(_order):
+        sent.append("execute")
+        return {"status": "Success", "signature": "s1", "totalOutputAmount": "7"}
+
+    def fake_decimals(mint):
+        if mint == "B":
+            raise RuntimeError("rpc down")
+        return 0
+
+    monkeypatch.setattr(transactions, "create_order", fake_create)
+    monkeypatch.setattr(transactions, "execute_order", fake_execute)
+    monkeypatch.setattr(transactions, "decimals", fake_decimals)
+    monkeypatch.setattr(transactions, "_input_balance", lambda mint: 10.0)
+
+    attempts = []
+    result = asyncio.run(
+        transactions.perform_swap(1.0, "A", "B", "A", "B", attempts=attempts)
+    )
+
+    assert result is None
+    assert sent == []
+    assert [a["status"] for a in attempts] == ["no_order"] * 3
+    assert "rpc down" in attempts[0]["error"]
+
+
+def test_perform_swap_looks_up_no_decimals_after_the_swap_lands(monkeypatch):
+    import asyncio
+
+    from sol_trade import transactions
+
+    landed = []
+
+    async def fake_create(*args, **kwargs):
+        return {"requestId": "r1", "outAmount": "7"}
+
+    async def fake_execute(_order):
+        landed.append(True)
+        return {"status": "Success", "signature": "s1", "totalOutputAmount": "6000"}
+
+    def fake_decimals(mint):
+        if landed:
+            raise RuntimeError("decimals looked up after the swap landed")
+        return 3
+
+    monkeypatch.setattr(transactions, "create_order", fake_create)
+    monkeypatch.setattr(transactions, "execute_order", fake_execute)
+    monkeypatch.setattr(transactions, "decimals", fake_decimals)
+    monkeypatch.setattr(transactions, "_input_balance", lambda mint: 10.0)
+
+    result = asyncio.run(transactions.perform_swap(1.0, "A", "B", "A", "B"))
+
+    assert result == {"out_amount": 6.0, "sent_amount": 1.0}
