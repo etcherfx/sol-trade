@@ -412,7 +412,7 @@ def build_application(
         idx = (SCREENS.index(screen["name"]) + 1) % len(SCREENS)
         switch(event.app, SCREENS[idx])
 
-    for digit, name in zip(("1", "2", "3"), SCREENS):
+    for digit, name in zip(("1", "2", "3"), SCREENS, strict=True):
 
         @kb.add(digit)
         def _(event: Any, name: str = name) -> None:

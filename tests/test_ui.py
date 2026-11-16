@@ -1,5 +1,15 @@
 """Tests for the UI shared state."""
 
+from types import SimpleNamespace
+from typing import Any, cast
+
+import pytest
+from prompt_toolkit.formatted_text import to_formatted_text
+from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.layout import HSplit, Window
+from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.output import DummyOutput
+
 from sol_trade import ui
 from sol_trade.config import config
 from sol_trade.ui import TokenStatus, UIState, _token_price
@@ -24,6 +34,32 @@ def test_run_ui_fills_initial_state(monkeypatch):
     assert state.exchange == "kraken"
     assert state.candles_path == "data/other.db"
     assert state.wallet_address == "abc123…wxyz"
+
+
+def _digit_handler(app, digit):
+    (binding,) = [b for b in app.key_bindings.bindings if b.keys == (digit,)]
+    return binding.handler
+
+
+def test_digit_keys_switch_to_each_screen():
+    with create_pipe_input() as pipe:
+        app = ui.build_application(UIState(), output=DummyOutput(), input=pipe)
+        for digit, name in zip(("1", "2", "3"), ui.SCREENS, strict=True):
+            _digit_handler(app, digit)(cast(Any, SimpleNamespace(app=app)))
+            screen = app.layout.container
+            assert isinstance(screen, HSplit)
+            footer = screen.children[-1]
+            assert isinstance(footer, Window)
+            assert isinstance(footer.content, FormattedTextControl)
+            text = to_formatted_text(footer.content.text)
+            assert text == to_formatted_text(ui.footer_fragments(name))
+
+
+def test_screen_without_digit_key_fails_loudly(monkeypatch):
+    # A screen added without a digit binding must not be silently unreachable.
+    monkeypatch.setattr(ui, "SCREENS", (*ui.SCREENS, "extra"))
+    with create_pipe_input() as pipe, pytest.raises(ValueError):
+        ui.build_application(UIState(), output=DummyOutput(), input=pipe)
 
 
 def test_update_holds_lock_and_snapshot_copies():
