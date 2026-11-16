@@ -496,14 +496,14 @@ async def _run_app(app: Application) -> None:
 
 def run_ui(state: UIState) -> None:
     """Fill initial state and run the UI until the user quits."""
-    state.update(
-        lambda s: (
-            setattr(s, "strategy", config().strategy),
-            setattr(s, "exchange", config().data_exchange),
-            setattr(s, "candles_path", config().candles_path),
-            setattr(s, "wallet_address", _wallet_label()),
-        )
-    )
+
+    def _apply(s: UIState) -> None:
+        s.strategy = config().strategy
+        s.exchange = config().data_exchange
+        s.candles_path = config().candles_path
+        s.wallet_address = _wallet_label()
+
+    state.update(_apply)
     asyncio.run(_run_app(build_application(state)))
 
 

@@ -1,6 +1,29 @@
 """Tests for the UI shared state."""
 
+from sol_trade import ui
+from sol_trade.config import config
 from sol_trade.ui import TokenStatus, UIState, _token_price
+
+
+def test_run_ui_fills_initial_state(monkeypatch):
+    def fake_run(coro):
+        coro.close()
+
+    monkeypatch.setattr(ui, "build_application", lambda state: None)
+    monkeypatch.setattr(ui.asyncio, "run", fake_run)
+    monkeypatch.setattr(ui, "_wallet_label", lambda: "abc123…wxyz")
+    # Values that differ from the UIState defaults, so each assignment shows.
+    monkeypatch.setattr(config(), "strategy", "momentum")
+    monkeypatch.setattr(config(), "data_exchange", "kraken")
+    monkeypatch.setattr(config(), "candles_path", "data/other.db")
+
+    state = UIState()
+    ui.run_ui(state)
+
+    assert state.strategy == "momentum"
+    assert state.exchange == "kraken"
+    assert state.candles_path == "data/other.db"
+    assert state.wallet_address == "abc123…wxyz"
 
 
 def test_update_holds_lock_and_snapshot_copies():
