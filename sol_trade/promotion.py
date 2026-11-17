@@ -244,6 +244,10 @@ def _edit_config(change: Any) -> str:
         Path(tmp).unlink(missing_ok=True)
         raise
     cfg.maybe_reload_config()
+    try:
+        pin_paper_sources()  # the reload drops a rollback the bot made in memory
+    except Exception as e:  # noqa: BLE001 - the edit is done; the bot checks again next cycle
+        log_general.error(f"paper candle source check failed: {e}")
     return str(backup)
 
 
@@ -337,6 +341,20 @@ def _to_paper(candidate: Candidate, strategy: Strategy, symbol: str) -> dict[str
     limit = int(config().promotion["max_paper_candidates"])
     if len(candidates(states=(PAPER,))) >= limit:
         raise Refused("paper_full", f"{limit} candidates are already in paper")
+    pinned = pinned_sources()
+    conflicts = [
+        f"{describe_source(s, current)} is configured, but paper book(s) {pinned[s][1]} read "
+        f"{describe_source(s, pinned[s][0])}"
+        for s, current in paper_sources(candidate).items()
+        if s in pinned and pinned[s][0] != current
+    ]
+    if conflicts:
+        raise Refused(
+            "source_conflict",
+            "a symbol this strategy reads has another candle source than an open paper book; set "
+            "token_exchanges back or wait until that book leaves paper",
+            conflicts,
+        )
     if _holdout_verdict(candidate.holdout) != evaluation.PASS:
         start_ts = (candidate.holdout or {}).get("start_ts")
         result = evaluation.holdout(strategy, symbol, model=model, start_ts=start_ts)
@@ -353,7 +371,10 @@ def _to_paper(candidate: Candidate, strategy: Strategy, symbol: str) -> dict[str
             )
     ledger.delete_book(candidate.book_name)
     capital = backtest.sizing()[0]
-    ledger.save_meta(candidate.book_name, {"cash": capital, "capital": capital, "observed_bars": 0})
+    ledger.save_meta(
+        candidate.book_name,
+        {"cash": capital, "capital": capital, "observed_bars": 0, "sources": paper_sources(candidate)},
+    )
     return _transition(candidate, PAPER, "held-out period passed", {"holdout": candidate.holdout or "passed"})
 
 
@@ -476,6 +497,70 @@ def paper_book_state(candidate: Candidate) -> dict[str, Any]:
     return {"meta": meta, "state": state}
 
 
+def _source_entry(source: history.Source) -> dict[str, str]:
+    return {"exchange": source.exchange, "quote": source.quote}
+
+
+def describe_source(symbol: str, entry: dict[str, str]) -> str:
+    return f"{symbol}/{entry['quote']} on {entry['exchange']}"
+
+
+def paper_sources(candidate: Candidate) -> dict[str, dict[str, str]]:
+    """The configured candle source of every symbol a paper book reads: its token and its strategy's references."""
+    symbols = dict.fromkeys((candidate.symbol, *candidate.compile().references))
+    return {symbol: _source_entry(history.source_for(symbol)) for symbol in symbols}
+
+
+def source_changes(
+    candidate: Candidate, meta: dict[str, Any] | None = None
+) -> dict[str, tuple[dict[str, str], dict[str, str]]]:
+    """Symbols whose configured candle source differs from the one the paper book started on.
+
+    Maps each to ``(started on, configured now)``. The book and its replays read the configured
+    source, so after such a change the paper-to-live comparison would compare two series.
+    """
+    recorded = (ledger.load_meta(candidate.book_name) if meta is None else meta).get("sources") or {}
+    changes = {}
+    for symbol, entry in recorded.items():
+        current = _source_entry(history.source_for(symbol))
+        if current != entry:
+            changes[symbol] = (entry, current)
+    return changes
+
+
+def pinned_sources() -> dict[str, tuple[dict[str, str], list[str]]]:
+    """Per symbol any paper book reads: the source the earliest of them started on, and every such book."""
+    pinned: dict[str, tuple[dict[str, str], list[str]]] = {}
+    for candidate in sorted(candidates(states=(PAPER,)), key=lambda c: c.entered_at):
+        for symbol, entry in (ledger.load_meta(candidate.book_name).get("sources") or {}).items():
+            pinned.setdefault(symbol, (entry, []))[1].append(candidate.book_name)
+    return pinned
+
+
+def pin_paper_sources() -> None:
+    """Keep every symbol a paper book reads on the candle source the book started on.
+
+    A changed ``token_exchanges`` entry would make the book and its replays read
+    another venue's series, so the paper-to-live comparison could diverge. The
+    entry is set back in memory and an error is logged. When books started on
+    different sources, the earliest book's source is kept, so it never flips.
+    """
+    rolled_back = {
+        symbol: (entry, books)
+        for symbol, (entry, books) in pinned_sources().items()
+        if _source_entry(history.source_for(symbol)) != entry
+    }
+    if not rolled_back:
+        return
+    cfg = config()
+    cfg.token_exchanges = {**cfg.token_exchanges, **{s: entry for s, (entry, _) in rolled_back.items()}}
+    for symbol, (entry, books) in rolled_back.items():
+        log_general.error(
+            f"token_exchanges change for {symbol} rejected: paper book(s) {books} read "
+            f"{describe_source(symbol, entry)}; retire or demote them before switching the source"
+        )
+
+
 def _last_close(candidate: Candidate) -> float | None:
     frame = history.load_bars(history.source_for(candidate.symbol), candidate.timeframe, limit=1)
     return float(frame["close"].iat[-1]) if len(frame) else None
@@ -485,6 +570,8 @@ def record_paper_cycle(candidate: Candidate, book: Book, bars_processed: int) ->
     """Update a paper book's bookkeeping after the bot advanced it."""
     meta = ledger.load_meta(candidate.book_name)
     meta["cash"] = book.cash
+    if "sources" not in meta:  # a book started before sources were recorded
+        meta["sources"] = paper_sources(candidate)
     state = book.state(candidate.symbol)
     if meta.get("first_bar_ts") is None and state.last_bar_ts is not None:
         meta["first_bar_ts"] = state.last_bar_ts
@@ -521,7 +608,18 @@ def live_readiness(candidate: Candidate, now: float | None = None) -> tuple[list
         reasons.append(f"{len(paper_trades)} of {p['min_paper_trades']} paper round trips")
 
     state = ledger.load_state(candidate.book_name, candidate.symbol)
-    paper_pnl, replay_pnl = _replay_comparison(candidate, strategy, paper_trades, meta, state.last_bar_ts, capital)
+    changed = source_changes(candidate, meta)
+    for symbol, (started, current) in changed.items():
+        reasons.append(
+            f"the candle source of {symbol} is {describe_source(symbol, current)}, but this paper book started on "
+            f"{describe_source(symbol, started)}; set token_exchanges.{symbol} back, since its replays would read "
+            "another series"
+        )
+    paper_pnl, replay_pnl = (
+        (None, None)
+        if changed
+        else _replay_comparison(candidate, strategy, paper_trades, meta, state.last_bar_ts, capital)
+    )
     if paper_pnl is not None and replay_pnl is not None:
         tolerance = max(p["replay_tolerance_points"], p["replay_tolerance_relative"] * abs(replay_pnl))
         if abs(paper_pnl - replay_pnl) > tolerance:

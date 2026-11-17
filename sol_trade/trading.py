@@ -723,6 +723,10 @@ def start_trading(state: UIState, dry_run: bool = False) -> None:
                 if _token_set_snapshot() != prev_tokens:
                     # Reject removals that would orphan an open position.
                     _enforce_token_change_guard(prev_tokens)
+                try:
+                    promotion.pin_paper_sources()
+                except Exception as e:  # noqa: BLE001 - checked again next cycle
+                    log_general.error(f"paper candle source check failed: {e}")
                 token_key = (config().primary_mint, tuple(config().secondary_mints))
                 if token_key != _baseline_key:
                     log_general.info(

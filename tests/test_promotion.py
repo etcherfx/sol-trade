@@ -448,3 +448,123 @@ def test_paper_books_match_a_backtest_replay(cfg, strategy, monkeypatch):
     assert ledger.trades(candidate.book_name)  # it traded
     _, evidence = promotion.live_readiness(candidate)
     assert evidence["paper_return_pct"] == evidence["replay_return_pct"]
+
+
+def _paper_on_reference(monkeypatch):
+    """A paper book whose strategy reads REF, started while REF came from okx."""
+    from tests.test_reference import RELATIVE
+
+    monkeypatch.setattr(config(), "token_exchanges", {"REF": {"exchange": "okx", "quote": "USDC"}})
+    relative = spec.compile_spec(RELATIVE)
+    _passed(relative)
+    _holdout(monkeypatch)
+    promotion.promote(relative, "TKN")
+    return relative, _candidate(relative)
+
+
+def test_a_paper_book_records_the_sources_it_reads(cfg, monkeypatch):
+    _, candidate = _paper_on_reference(monkeypatch)
+    primary = config().primary_mint_symbol
+    assert ledger.load_meta(candidate.book_name)["sources"] == {
+        "TKN": {"exchange": config().data_exchange, "quote": primary},
+        "REF": {"exchange": "okx", "quote": "USDC"},
+    }
+
+
+def test_promotion_refuses_a_paper_book_whose_reference_source_changed(cfg, monkeypatch):
+    relative, candidate = _paper_on_reference(monkeypatch)
+    _qualify(candidate)
+    monkeypatch.setattr(config(), "token_exchanges", {"REF": "mexc"})  # e.g. the CLI reading an edited config.json
+
+    monkeypatch.setattr(promotion, "_replay_comparison", lambda *_a, **_k: pytest.fail("replayed on the other venue"))
+
+    with pytest.raises(promotion.Refused) as refused:
+        promotion.promote(relative, "TKN")
+
+    assert refused.value.code == "not_ready"
+    assert any(
+        "candle source of REF is REF/" in reason and "on mexc" in reason and "REF/USDC on okx" in reason
+        for reason in refused.value.details
+    ), refused.value.details
+
+
+def test_the_bot_rolls_back_a_source_change_under_a_paper_book(cfg, monkeypatch, caplog):
+    _, candidate = _paper_on_reference(monkeypatch)
+    monkeypatch.setattr(config(), "token_exchanges", {"REF": "mexc", "OTHER": "kraken"})  # a hot reload
+
+    promotion.pin_paper_sources()
+
+    assert config().token_exchanges == {"REF": {"exchange": "okx", "quote": "USDC"}, "OTHER": "kraken"}
+    assert f"token_exchanges change for REF rejected: paper book(s) ['{candidate.book_name}']" in caplog.text
+    assert promotion.source_changes(candidate) == {}
+
+
+def test_a_paper_book_started_before_sources_were_recorded_records_them(cfg, strategy, monkeypatch):
+    _to_paper(strategy, monkeypatch)
+    candidate = _candidate(strategy)
+    meta = ledger.load_meta(candidate.book_name)
+    del meta["sources"]
+    ledger.save_meta(candidate.book_name, meta)
+
+    promotion.record_paper_cycle(candidate, Book(candidate.book_name, 100.0, SimExecutor(costs.model_for), 1, 1), 0)
+
+    assert ledger.load_meta(candidate.book_name)["sources"] == promotion.paper_sources(candidate)
+
+
+OKX = {"exchange": "okx", "quote": "USDC"}
+
+
+def _second_paper_book(monkeypatch):
+    """Another paper book on TKN that reads REF."""
+    from tests.test_reference import RELATIVE
+
+    other = spec.compile_spec({**RELATIVE, "lookback": 31})
+    _passed(other)
+    _holdout(monkeypatch)
+    promotion.promote(other, "TKN")
+    return _candidate(other)
+
+
+def test_paper_books_on_different_sources_keep_the_earliest_one(cfg, monkeypatch):
+    _, first = _paper_on_reference(monkeypatch)
+    second = _second_paper_book(monkeypatch)
+    meta = ledger.load_meta(second.book_name)
+    meta["sources"]["REF"] = {"exchange": "mexc", "quote": "USDC"}  # started while config.json said mexc
+    ledger.save_meta(second.book_name, meta)
+
+    for _ in range(2):
+        promotion.pin_paper_sources()
+        assert config().token_exchanges["REF"] == OKX  # no flip between cycles
+
+    assert promotion.source_changes(first) == {}
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        lambda: promotion._remove_token("NOPE"),  # the governor demoting a live token
+        lambda: promotion._add_token("NEW", "NEWmint", "s"),  # advance_paper promoting a paper book
+    ],
+    ids=["demote", "promote"],
+)
+def test_a_config_edit_by_the_pipeline_keeps_paper_sources(cfg, monkeypatch, edit):
+    _paper_on_reference(monkeypatch)
+    path = Path(config().path)
+    data = json.loads(path.read_text())
+    data["token_exchanges"] = {"REF": "mexc"}  # the edit the bot rejected stays in the file
+    path.write_text(json.dumps(data))
+
+    edit()
+
+    assert config().token_exchanges["REF"] == OKX
+
+
+def test_paper_refuses_a_book_on_another_source_than_an_open_paper_book(cfg, monkeypatch):
+    _, first = _paper_on_reference(monkeypatch)
+    monkeypatch.setattr(config(), "token_exchanges", {"REF": "mexc"})  # the CLI reading an edited config.json
+
+    with pytest.raises(promotion.Refused) as refused:
+        _second_paper_book(monkeypatch)
+
+    assert refused.value.code == "source_conflict"
+    assert any(first.book_name in detail and "REF/USDC on okx" in detail for detail in refused.value.details)
