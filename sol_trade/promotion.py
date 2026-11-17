@@ -169,6 +169,10 @@ def _transition(candidate: Candidate, to_state: str, reason: str, evidence: dict
             (candidate.hash, candidate.symbol, candidate.strategy, candidate.state, to_state, reason,
              json.dumps(evidence, default=str), now),
         )
+        if candidate.state == PAPER and to_state != PAPER:
+            # Nothing advances the paper book once it leaves paper, so its virtual position would stay open
+            # forever; its trades, fills and meta stay as evidence.
+            conn.execute("DELETE FROM positions WHERE book = ?", (candidate.book_name,))
     log_general.info(f"pipeline: {candidate.strategy} on {candidate.symbol} {candidate.state} -> {to_state} ({reason})")
     previous, candidate.state, candidate.entered_at = candidate.state, to_state, now
     return {**candidate.as_dict(), "from": previous, "to": to_state, "reason": reason}
@@ -588,6 +592,7 @@ def _replay_comparison(
 def advance_paper(now: float | None = None) -> list[dict[str, Any]]:
     """Promote qualifying paper candidates and retire stale ones (the bot calls this)."""
     now = time.time() if now is None else now
+    _prune_left_paper_positions()
     done = []
     for candidate in candidates(states=(PAPER,)):
         reasons, evidence = live_readiness(candidate, now)
@@ -599,6 +604,21 @@ def advance_paper(now: float | None = None) -> list[dict[str, Any]]:
         elif (now - candidate.entered_at) / 86400 > config().promotion["max_paper_days"]:
             done.append(_transition(candidate, RETIRED, "paper period ran out", {**evidence, "reasons": reasons}))
     return done
+
+
+def _prune_left_paper_positions() -> None:
+    """Delete position rows of paper books whose candidate is no longer in paper.
+
+    Covers rows left before transitions deleted them, and a row the bot saved for a book the CLI
+    moved out of paper during the same cycle.
+    """
+    keep = {c.book_name for c in candidates(states=(PAPER,))}
+    with ledger.connect() as conn:
+        books = [r[0] for r in conn.execute("SELECT DISTINCT book FROM positions WHERE book LIKE 'paper:%'")]
+        stale = [b for b in books if b not in keep]
+        conn.executemany("DELETE FROM positions WHERE book = ?", [(b,) for b in stale])
+    if stale:
+        log_general.info(f"pipeline: dropped the positions of {len(stale)} paper book(s) no longer in paper")
 
 
 # ----------------------------------------------------------------- governor

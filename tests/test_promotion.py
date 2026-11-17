@@ -285,6 +285,56 @@ def test_stale_paper_candidates_retire(cfg, strategy, monkeypatch):
     assert [d["to"] for d in done] == [promotion.RETIRED]
 
 
+def _hold_paper_position(candidate) -> None:
+    position = Position("TKN", candidate.strategy, candidate.hash, 1.0, 50.0, 50.0, 0, None, None)
+    ledger.save_state(candidate.book_name, "TKN", SymbolState(position=position, last_bar_ts=3600))
+
+
+def _go_live(strategy, candidate):
+    _qualify(candidate)
+    return promotion.promote(strategy, "TKN")
+
+
+def _retire(_strategy, _candidate):
+    with ledger.connect() as conn:
+        conn.execute("UPDATE candidates SET entered_at = ?", (time.time() - 61 * 86400,))
+    return promotion.advance_paper()[0]
+
+
+def _demote(_strategy, _candidate):
+    return promotion.demote("parity", "TKN")
+
+
+@pytest.mark.parametrize(
+    ("leave", "to_state"),
+    [(_go_live, promotion.LIVE), (_retire, promotion.RETIRED), (_demote, promotion.DEMOTED_STATE)],
+)
+def test_leaving_paper_drops_the_paper_position_but_keeps_the_evidence(cfg, strategy, monkeypatch, leave, to_state):
+    _to_paper(strategy, monkeypatch)
+    candidate = _candidate(strategy)
+    _hold_paper_position(candidate)
+
+    assert leave(strategy, candidate)["to"] == to_state
+
+    assert ledger.open_positions() == []
+    assert ledger.load_meta(candidate.book_name)["capital"] == config().risk["max_live_capital"]
+    if leave is _go_live:
+        assert len(ledger.trades(candidate.book_name)) == 2
+
+
+def test_advance_paper_prunes_positions_left_by_candidates_no_longer_in_paper(cfg, strategy, monkeypatch):
+    _to_paper(strategy, monkeypatch)
+    staying = _candidate(strategy)
+    _hold_paper_position(staying)
+    gone = Position("TKN", "old", "f" * 64, 1.0, 50.0, 50.0, 0, None, None)
+    ledger.save_state("paper:ffffffffffff:TKN", "TKN", SymbolState(position=gone))
+    ledger.save_state(ledger.DRY_RUN, "TKN", SymbolState(position=gone))
+
+    promotion.advance_paper()
+
+    assert sorted(book for book, _ in ledger.open_positions()) == [ledger.DRY_RUN, staying.book_name]
+
+
 def _live(strategy, monkeypatch):
     _to_paper(strategy, monkeypatch)
     _qualify(_candidate(strategy))
