@@ -120,6 +120,7 @@ def test_live_executor_records_actual_and_modeled_costs(monkeypatch):
         return {"out_amount": 99.0, "sent_amount": amount}
 
     monkeypatch.setattr(trading, "perform_swap", fake_swap)
+    monkeypatch.setattr(trading, "find_balance", lambda _mint: 0.0)
     executor = trading.LiveExecutor()
 
     buy = executor.buy("SOL", 100.0, 99.0, 60, "signal")
@@ -132,6 +133,68 @@ def test_live_executor_records_actual_and_modeled_costs(monkeypatch):
     assert buy.modeled_cost == pytest.approx(0.2)
     assert swaps[1][0] == 0.5  # capped at the wallet balance
     assert sell.cost == pytest.approx(0.5 * 100 - 99.0)
+
+
+def _zero_out_buy(monkeypatch, balances):
+    """A buy that lands but reports no output; ``balances`` are the wallet reads, in order."""
+    trading._last_price_map[config().secondary_mints[0]] = 100.0
+    monkeypatch.setattr(costs, "model_for", lambda _s: FREE)
+    monkeypatch.setattr(trading, "_RECONCILE_DELAYS", (0.0, 0.0, 0.0))
+    reads = iter(balances)
+
+    def fake_balance(_mint):
+        value = next(reads)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    async def fake_swap(amount, *_args):
+        return {"out_amount": 0, "sent_amount": amount}
+
+    monkeypatch.setattr(trading, "find_balance", fake_balance)
+    monkeypatch.setattr(trading, "perform_swap", fake_swap)
+
+
+@pytest.mark.parametrize(
+    "balances",
+    [
+        [2.0, 3.0],  # the wallet shows the tokens right away
+        [2.0, 2.0, None, 3.0],  # the RPC lags the swap, then a read fails
+    ],
+)
+def test_a_buy_with_no_reported_output_is_sized_from_the_wallet(monkeypatch, balances):
+    _zero_out_buy(monkeypatch, balances)
+
+    buy = trading.LiveExecutor().buy("SOL", 100.0, 99.0, 60, "signal")
+
+    assert buy is not None
+    assert buy.size == pytest.approx(1.0)
+    assert buy.price == pytest.approx(100.0)
+    assert buy.notional == pytest.approx(100.0)
+
+
+@pytest.mark.parametrize(
+    ("balances", "why"),
+    [
+        ([None], "no balance read before the swap"),
+        ([RuntimeError("rpc down")], "no balance read before the swap"),
+        ([2.0, None, RuntimeError("rpc down"), None], "no balance read after the swap"),
+        ([2.0, 2.0, 2.0, 2.0], "the balance did not rise"),
+        ([2.0, 2.1], "the balance rose by 0.1, expected about 1.0101"),
+        ([2.0, 7.0], "the balance rose by 5, expected about 1.0101"),
+    ],
+)
+def test_a_buy_with_no_trustworthy_size_is_reported_as_untracked(monkeypatch, caplog, balances, why):
+    _zero_out_buy(monkeypatch, balances)
+
+    with caplog.at_level("ERROR", logger="general_logger"):
+        buy = trading.LiveExecutor().buy("SOL", 100.0, 99.0, 60, "signal")
+
+    assert buy is None
+    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1
+    assert why in errors[0]
+    assert "the wallet holds an untracked SOL position" in errors[0]
 
 
 def test_legacy_csv_positions_are_imported_once(tmp_path):

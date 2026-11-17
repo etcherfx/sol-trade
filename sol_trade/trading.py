@@ -70,18 +70,23 @@ class BalanceCache:
         self._cache.pop(mint, None)
 
 
-def _safe_balance(mint: str) -> float:
-    """Balance read that degrades to 0.0 on RPC errors.
+def _read_balance(mint: str) -> float | None:
+    """Fresh wallet balance, or None when the RPC fails.
 
     find_balance returns None on persistent rate limiting but RAISES on other
     RPC failures; an unhandled raise here would abort the entire analysis
     cycle (or startup) for a transient outage.
     """
     try:
-        return find_balance(mint) or 0.0
+        return find_balance(mint)
     except Exception as e:  # noqa: BLE001 - balance outage must not kill the cycle
         log_general.warning(f"failed to fetch balance for {mint}: {e}")
-        return 0.0
+        return None
+
+
+def _safe_balance(mint: str) -> float:
+    """Balance read that degrades to 0.0 on RPC errors."""
+    return _read_balance(mint) or 0.0
 
 
 _balance_cache = BalanceCache()
@@ -164,6 +169,46 @@ def _enforce_token_change_guard(prev: dict[str, Any]) -> None:
 
 # ---------------------------------------------------------------- execution
 
+# Seconds to wait before each wallet read that sizes a landed buy whose swap
+# reported no output amount; the RPC node can lag the confirmed swap.
+_RECONCILE_DELAYS = (0.0, 2.0, 5.0)
+# A balance rise outside this share of the expected size is not attributed to the buy.
+_RECONCILE_BAND = (0.5, 2.0)
+
+
+def _reconciled_buy_size(symbol: str, mint: str, before: float | None, expected: float) -> float | None:
+    """Tokens a landed buy added to the wallet, from its balance; None when no size can be trusted."""
+
+    def untracked(why: str) -> None:
+        log_general.error(
+            f"{symbol}: the buy landed but the swap reported no output amount and {why}; "
+            f"the wallet holds an untracked {symbol} position"
+        )
+
+    if before is None:
+        untracked("no balance read before the swap")
+        return None
+    after = None
+    for delay in _RECONCILE_DELAYS:
+        if delay > 0:
+            time.sleep(delay)
+        after = _read_balance(mint)
+        if after is not None and after > before:
+            break
+    if after is None:
+        untracked("no balance read after the swap")
+        return None
+    moved = after - before
+    if moved <= 0:
+        untracked("the balance did not rise")
+        return None
+    low, high = _RECONCILE_BAND
+    if expected > 0 and not low * expected <= moved <= high * expected:
+        untracked(f"the balance rose by {moved:.5g}, expected about {expected:.5g}")
+        return None
+    log_general.warning(f"{symbol}: the swap reported no output amount; recording {moved:g} from the wallet balance")
+    return moved
+
 
 class LiveExecutor:
     """Swaps through Jupiter from the wallet; records actual next to modeled costs."""
@@ -177,14 +222,22 @@ class LiveExecutor:
         if mint is None:
             return None
         log_transaction.info(f"buying {symbol} with {notional:.4f} {cfg.primary_mint_symbol} ({reason})")
+        # Sampled so a landed swap that reports no output can be sized from the wallet.
+        before = _read_balance(mint)
         result = asyncio.run(
             perform_swap(notional, cfg.primary_mint, mint, cfg.primary_mint_symbol, symbol)
         )
         _balance_cache.invalidate(cfg.primary_mint)
         _balance_cache.invalidate(mint)
-        if not result or float(result.get("out_amount") or 0) <= 0:
-            return None
-        size = float(result["out_amount"])
+        if not result:
+            return None  # the swap did not land
+        size = float(result.get("out_amount") or 0)
+        if size <= 0:
+            expected = notional / price if price > 0 else 0.0
+            reconciled = _reconciled_buy_size(symbol, mint, before, expected)
+            if reconciled is None:
+                return None
+            size = reconciled
         market = _last_price_map.get(mint) or price
         modeled = costs.model_for(symbol).cost_usd(notional)
         return Fill(symbol, BUY, ts, notional / size, size, notional, notional - size * market, 0.0, reason, modeled)
