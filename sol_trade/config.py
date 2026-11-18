@@ -127,6 +127,51 @@ SECTION_DEFAULTS: dict[str, dict[str, Any]] = {
 }
 
 
+# Top-level config.json keys and their fallbacks; _apply_config_file sets each one.
+_FILE_DEFAULTS: dict[str, Any] = {
+    "jupiter_api_key": "",
+    "private_key": "",
+    "rpc_https": "https://api.mainnet-beta.solana.com",
+    "jup_api": "https://api.jup.ag/swap/v2",
+    "primary_mint": "",
+    "primary_mint_symbol": "",
+    "secondary_mints": [],
+    "secondary_mint_symbols": [],
+    "secondary_weights": [],
+    "token_strategies": {},
+    "token_exchanges": {},
+    "token_mints": {},
+    "price_update_seconds": 60,
+    "max_slippage": 50,
+    "strategy": "default",
+    "data_exchange": "okx",
+    "candles_path": "data/candles.db",
+    "strategies_path": "strategies",
+    "research_db_path": "data/research.db",
+
+    # Whale Tracker
+    "whale_tracking_enabled": False,
+    "whale_wallets": {},
+    "whale_poll_interval_minutes": 5,
+    "whale_data_path": "data/whale_data.json",
+
+    # Confluence Filter
+    "confluence_enabled": False,
+
+    # Market Regime
+    "market_regime_enabled": False,
+    "market_regime_pair": "",
+    "regime_data_path": "data/regime_data.json",
+
+    # Sentiment Circuit Breaker
+    "sentiment_enabled": False,
+    "sentiment_pause_hours": 4,
+    "sentiment_threshold": -0.5,
+    "sentiment_crash_threshold": -0.7,
+    "sentiment_data_path": "data/sentiment_data.json",
+}
+
+
 def _merge_section(default: dict[str, Any], value: Any) -> dict[str, Any]:
     """Overlay a config.json section on its defaults (unknown keys are kept)."""
     merged = copy.deepcopy(default)
@@ -225,49 +270,6 @@ class Config:
     promotion: dict[str, Any]
 
     def _apply_config_file(self) -> None:
-        default_config: dict[str, Any] = {
-            "jupiter_api_key": "",
-            "private_key": "",
-            "rpc_https": "https://api.mainnet-beta.solana.com",
-            "jup_api": "https://api.jup.ag/swap/v2",
-            "primary_mint": "",
-            "primary_mint_symbol": "",
-            "secondary_mints": [],
-            "secondary_mint_symbols": [],
-            "secondary_weights": [],
-            "token_strategies": {},
-            "token_exchanges": {},
-            "token_mints": {},
-            "price_update_seconds": 60,
-            "max_slippage": 50,
-            "strategy": "default",
-            "data_exchange": "okx",
-            "candles_path": "data/candles.db",
-            "strategies_path": "strategies",
-            "research_db_path": "data/research.db",
-
-            # Whale Tracker
-            "whale_tracking_enabled": False,
-            "whale_wallets": {},
-            "whale_poll_interval_minutes": 5,
-            "whale_data_path": "data/whale_data.json",
-
-            # Confluence Filter
-            "confluence_enabled": False,
-
-            # Market Regime
-            "market_regime_enabled": False,
-            "market_regime_pair": "",
-            "regime_data_path": "data/regime_data.json",
-
-            # Sentiment Circuit Breaker
-            "sentiment_enabled": False,
-            "sentiment_pause_hours": 4,
-            "sentiment_threshold": -0.5,
-            "sentiment_crash_threshold": -0.7,
-            "sentiment_data_path": "data/sentiment_data.json",
-        }
-
         with open(self.path) as file:
             try:
                 config_data: dict[str, Any] = json.load(file)
@@ -276,10 +278,10 @@ class Config:
         if not isinstance(config_data, dict):
             raise ValueError("Error loading config: the top level must be a JSON object")  # noqa: TRY004 - callers handle ValueError
 
-        for key, fallback in default_config.items():
-            value = config_data.get(key, fallback)
+        for key, fallback in _FILE_DEFAULTS.items():
+            value = config_data.get(key)
             if value in ("", None):
-                value = fallback
+                value = copy.deepcopy(fallback)
             setattr(self, key, value)
         for section, defaults in SECTION_DEFAULTS.items():
             setattr(self, section, _merge_section(defaults, config_data.get(section)))
@@ -329,26 +331,19 @@ class Config:
 
         Structural keys (primary token, RPC, exchange) and credentials are
         pinned — changing those still requires a restart. A malformed or
-        invalid token set keeps the previous configuration.
+        invalid file keeps the previous configuration.
         """
         pinned = {key: getattr(self, key) for key in _STRUCTURAL_KEYS}
-        token_set = {
-            attr: getattr(self, attr)
-            for attr in (
-                "secondary_mints",
-                "secondary_mint_symbols",
-                "secondary_weights",
-                "token_strategies",
-                "token_exchanges",
-            )
-        }
+        previous = {key: getattr(self, key) for key in (*_FILE_DEFAULTS, *SECTION_DEFAULTS)}
         self._apply_config_file()
         for key, value in pinned.items():
             setattr(self, key, value)
         try:
             self._validate_config()
         except ValueError:
-            for key, value in token_set.items():
+            # Every setting goes back, but the invalid file's mtime stays, so
+            # it isn't re-read (and its error re-logged) until it changes again.
+            for key, value in previous.items():
                 setattr(self, key, value)
             raise
 

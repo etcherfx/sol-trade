@@ -226,6 +226,90 @@ def _write(tmp_path, data):
 _PRIMARY = {"primary_mint": "PRIMARY_MINT", "primary_mint_symbol": "QUOTE"}
 
 
+def _rewrite(path, data, mtime):
+    import json
+    import os
+
+    with open(path, "w") as file:
+        json.dump(data, file)
+    os.utime(path, (mtime, mtime))
+
+
+def test_reload_failing_validation_keeps_every_previous_setting(tmp_path):
+    import os
+
+    from sol_trade.config import Config
+
+    path = _write(tmp_path, {**_PRIMARY, "strategy": "old", "max_slippage": 10, "risk": {"max_trade_size": 5.0}})
+    c = Config(config_path=path, dotenv_path=os.devnull)
+    _rewrite(
+        path,
+        {
+            **_PRIMARY,
+            "strategy": "new",
+            "max_slippage": 999,
+            "risk": {"max_trade_size": 77.0},
+            "secondary_mints": ["A", "B"],
+            "secondary_mint_symbols": ["AAA"],  # unequal lengths fail validation
+        },
+        1_000_000.0,
+    )
+
+    c.maybe_reload_config()
+
+    assert c.strategy == "old"
+    assert c.max_slippage == 10
+    assert c.risk["max_trade_size"] == 5.0
+    assert c.secondary_mints == []
+
+
+def test_omitted_mutable_settings_are_not_the_module_defaults(tmp_path):
+    """Each load gets its own [] and {} defaults, also after a failed reload restores them."""
+    import os
+
+    from sol_trade.config import _FILE_DEFAULTS, SECTION_DEFAULTS, Config
+
+    def assert_not_shared(c):
+        for key, default in _FILE_DEFAULTS.items():
+            if isinstance(default, (list, dict)):
+                assert getattr(c, key) is not default, key
+        for section, defaults in SECTION_DEFAULTS.items():
+            assert getattr(c, section) is not defaults, section
+            for key, default in defaults.items():
+                if isinstance(default, (list, dict)):
+                    assert getattr(c, section)[key] is not default, f"{section}.{key}"
+
+    path = _write(tmp_path, _PRIMARY)
+    c = Config(config_path=path, dotenv_path=os.devnull)
+    assert_not_shared(c)
+
+    _rewrite(path, {**_PRIMARY, "secondary_mints": ["A"], "secondary_mint_symbols": []}, 1_000_000.0)
+    c.maybe_reload_config()  # fails validation and restores the previous values
+    assert_not_shared(c)
+
+
+def test_reload_failing_validation_is_not_retried_until_the_file_changes(tmp_path, caplog):
+    """The invalid file's mtime is kept, so the error is logged once, and a fixed file still reloads."""
+    import os
+
+    from sol_trade.config import Config
+
+    path = _write(tmp_path, {**_PRIMARY, "strategy": "old"})
+    c = Config(config_path=path, dotenv_path=os.devnull)
+    invalid = {**_PRIMARY, "strategy": "new", "secondary_mints": ["A"], "secondary_mint_symbols": []}
+    _rewrite(path, invalid, 1_000_000.0)
+
+    with caplog.at_level("ERROR", logger="general_logger"):
+        c.maybe_reload_config()
+        c.maybe_reload_config()
+    assert len([r for r in caplog.records if "failed to reload config.json" in r.message]) == 1
+    assert c.strategy == "old"
+
+    _rewrite(path, {**_PRIMARY, "strategy": "fixed"}, 1_000_100.0)
+    c.maybe_reload_config()
+    assert c.strategy == "fixed"
+
+
 def test_empty_token_set_is_valid(tmp_path):
     import os
 
