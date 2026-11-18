@@ -458,6 +458,9 @@ class Config:
         Despite the name this is ``10 ** decimals`` (e.g. 1_000_000_000 for a
         9-decimal token), the value callers multiply token amounts by to get
         lamports/smallest units — not the decimals count itself.
+
+        Raises ``ValueError`` naming the mint when the RPC response is
+        malformed, an error, or not a mint account; failures are not cached.
         """
         if mint_address in self._decimals_cache:
             return self._decimals_cache[mint_address]
@@ -467,10 +470,17 @@ class Config:
                 Pubkey.from_string(mint_address)
             )
         ).to_json()
-        json_response = json.loads(response)
-        value = (
-            10 ** json_response["result"]["value"]["data"]["parsed"]["info"]["decimals"]
-        )
+        try:
+            count = json.loads(response)["result"]["value"]["data"]["parsed"]["info"]["decimals"]
+        except (ValueError, KeyError, TypeError, IndexError) as e:
+            raise ValueError(
+                f"no token decimals in the RPC response for mint {mint_address}"
+            ) from e
+        if type(count) is not int or count < 0:
+            raise ValueError(
+                f"invalid token decimals {count!r} in the RPC response for mint {mint_address}"
+            )
+        value = 10**count
 
         self._decimals_cache[mint_address] = value
         return value

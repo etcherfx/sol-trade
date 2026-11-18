@@ -1,5 +1,7 @@
 """Tests for configuration defaults."""
 
+import json
+
 import pytest
 
 from sol_trade.config import config
@@ -496,3 +498,74 @@ def test_no_deprecation_warning_without_config_json_secrets(tmp_path, monkeypatc
         c = Config(config_path=_write(tmp_path, _PRIMARY), dotenv_path=os.devnull)
     assert c.private_key == "env-key"
     assert _deprecations(caplog) == []
+
+
+_MINT = "So11111111111111111111111111111111111111112"
+
+
+def _stub_rpc(monkeypatch, *responses):
+    """Answer config().decimals' RPC calls with the given raw JSON strings, in order."""
+    import sol_trade.config as config_module
+
+    calls = []
+
+    class _Response:
+        def __init__(self, text):
+            self._text = text
+
+        def to_json(self):
+            return self._text
+
+    class _Client:
+        async def get_account_info_json_parsed(self, pubkey):
+            return None
+
+    def fake_run_async(coro):
+        coro.close()
+        calls.append(1)
+        return _Response(responses[len(calls) - 1])
+
+    c = config()
+    monkeypatch.setattr(c, "_client", _Client())
+    monkeypatch.setattr(c, "_decimals_cache", {})
+    monkeypatch.setattr(config_module, "run_async", fake_run_async)
+    return calls
+
+
+def _account(data):
+    return json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"context": {"slot": 1}, "value": data}})
+
+
+def _mint_account(decimals):
+    return _account({"data": {"parsed": {"info": {"decimals": decimals}, "type": "mint"},
+                              "program": "spl-token", "space": 82}})
+
+
+def test_decimals_returns_the_multiplier_and_caches_it(monkeypatch):
+    calls = _stub_rpc(monkeypatch, _mint_account(6))
+    assert config().decimals(_MINT) == 1_000_000
+    assert config().decimals(_MINT) == 1_000_000
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("response", [
+    "not json",
+    json.dumps({"jsonrpc": "2.0", "id": 1, "error": {"code": -32602, "message": "Invalid param"}}),
+    _account(None),  # account does not exist
+    _account({"data": ["AAAA", "base64"]}),  # not parsed
+    _account({"data": {"parsed": {"info": {"owner": "x"}, "type": "account"}}}),  # token account
+    _mint_account("6"),
+    _mint_account(-1),
+])
+def test_decimals_rejects_a_bad_response_naming_the_mint(monkeypatch, response):
+    _stub_rpc(monkeypatch, response)
+    with pytest.raises(ValueError, match=_MINT):
+        config().decimals(_MINT)
+
+
+def test_decimals_does_not_cache_a_failure(monkeypatch):
+    calls = _stub_rpc(monkeypatch, _account(None), _mint_account(9))
+    with pytest.raises(ValueError):
+        config().decimals(_MINT)
+    assert config().decimals(_MINT) == 10**9
+    assert len(calls) == 2
