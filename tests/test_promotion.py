@@ -18,16 +18,14 @@ MEASURED = CostModel("TKN", "measured", ((0.0, 10.0),), 0.0)
 TKN_MINT = "TKNmint1111111111111111111111111111111111111"
 
 
-@pytest.fixture
-def cfg(tmp_path, monkeypatch):
-    """A writable copy of the test config with a known TKN mint; the token set is restored afterwards."""
+def _writable_config(tmp_path, monkeypatch):
     c = config()
     data = json.loads(Path(c.path).read_text())
     data["token_mints"] = {"TKN": TKN_MINT}
     path = tmp_path / "config.json"
     path.write_text(json.dumps(data))
     for attr in ("path", "_config_mtime", "secondary_mints", "secondary_mint_symbols", "secondary_weights",
-                 "token_strategies", "token_mints"):
+                 "token_strategies", "token_exchanges", "token_mints"):
         monkeypatch.setattr(c, attr, getattr(c, attr))
     c.path = str(path)
     c.token_mints = {"TKN": TKN_MINT}
@@ -35,6 +33,22 @@ def cfg(tmp_path, monkeypatch):
     monkeypatch.setattr(costs, "sample_age_days", lambda _s, now=None: 1.0)
     monkeypatch.setattr(promotion.costs, "model_for", lambda _s: MEASURED)
     return c
+
+
+@pytest.fixture
+def cfg(tmp_path, monkeypatch):
+    """A writable copy of the test config with a known TKN mint; the token set is restored afterwards."""
+    return _writable_config(tmp_path, monkeypatch)
+
+
+def test_cfg_restores_token_exchanges(tmp_path):
+    c = config()
+    before = c.token_exchanges
+    with pytest.MonkeyPatch.context() as mp:
+        _writable_config(tmp_path, mp)
+        promotion._edit_config(lambda d: d.setdefault("token_exchanges", {}).update({"TKN": "mexc"}))
+        assert c.token_exchanges.get("TKN") == "mexc"
+    assert c.token_exchanges is before
 
 
 @pytest.fixture
