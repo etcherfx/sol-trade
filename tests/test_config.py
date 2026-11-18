@@ -237,6 +237,18 @@ def _rewrite(path, data, mtime):
     os.utime(path, (mtime, mtime))
 
 
+def test_unreadable_config_file_is_a_config_error(tmp_path):
+    import os
+
+    from sol_trade.config import Config
+
+    c = Config(config_path=_write(tmp_path, _PRIMARY), dotenv_path=os.devnull)
+    c.path = str(tmp_path / "missing.json")
+
+    with pytest.raises(ValueError, match="^Error loading config"):
+        c._apply_config_file()
+
+
 def test_reload_failing_validation_keeps_every_previous_setting(tmp_path):
     import os
 

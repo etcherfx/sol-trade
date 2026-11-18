@@ -270,11 +270,11 @@ class Config:
     promotion: dict[str, Any]
 
     def _apply_config_file(self) -> None:
-        with open(self.path) as file:
-            try:
+        try:
+            with open(self.path) as file:
                 config_data: dict[str, Any] = json.load(file)
-            except json.JSONDecodeError as e:
-                raise ValueError(f"Error loading config: {e}") from e
+        except (OSError, json.JSONDecodeError) as e:
+            raise ValueError(f"Error loading config: {e}") from e
         if not isinstance(config_data, dict):
             raise ValueError("Error loading config: the top level must be a JSON object")  # noqa: TRY004 - callers handle ValueError
 
