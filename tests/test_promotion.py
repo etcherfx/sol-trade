@@ -154,7 +154,9 @@ def test_an_inconclusive_holdout_keeps_the_hash_eligible(cfg, strategy, monkeypa
 
     assert pinned == [None, 1000]  # the second attempt judges the same period, grown
     assert len(fake_calls) == 2
-    assert _candidate(strategy).holdout["start_ts"] == 1000
+    holdout = _candidate(strategy).holdout
+    assert holdout is not None
+    assert holdout["start_ts"] == 1000
     _holdout(monkeypatch)  # enough trades now, and a profit
     assert promotion.promote(strategy, "TKN")["to"] == promotion.PAPER
 
@@ -163,6 +165,7 @@ def _legacy_rejection(strategy, symbol, first, last, bars):
     """A hash rejected before held-out verdicts existed, stored as that version stored it."""
     promotion.record_backtest(strategy, symbol, {"verdict": evaluation.PASS})
     candidate = promotion.get(strategy.hash, symbol)
+    assert candidate is not None
     old = {
         "reasons": ["holdout_trades 0 is below 8", "holdout_return_pct 0.0 is not above 0"],
         "gates": [{"gate": "holdout_trades", "value": 0, "threshold": 8, "passed": False}],
@@ -191,6 +194,7 @@ def test_reopen_a_hash_rejected_under_the_old_trade_minimum(cfg, sol_store):
 
     assert result["from"] == promotion.REJECTED and result["to"] == promotion.BACKTEST_PASSED
     candidate = promotion.get(strategy.hash, "SOL")
+    assert candidate is not None and candidate.holdout is not None
     assert candidate.holdout["verdict"] == evaluation.INSUFFICIENT
     assert candidate.holdout["data"]["first"] == "2026-08-10T12:00:00Z"  # the same period, pinned
     logged = promotion.transitions(strategy.hash)[0]
@@ -200,7 +204,9 @@ def test_reopen_a_hash_rejected_under_the_old_trade_minimum(cfg, sol_store):
         promotion.promote(strategy, "SOL")
     assert refused.value.code == "holdout_insufficient"  # still too few trades, but no longer rejected
 
-    promotion._transition(promotion.get(strategy.hash, "SOL"), promotion.REJECTED, "held-out period failed", {})
+    candidate = promotion.get(strategy.hash, "SOL")
+    assert candidate is not None
+    promotion._transition(candidate, promotion.REJECTED, "held-out period failed", {})
     with pytest.raises(promotion.Refused) as refused:
         promotion.reopen(strategy, "SOL")
     assert refused.value.code == "already_reopened"  # a one-off
@@ -214,7 +220,9 @@ def test_reopen_refuses_a_window_that_fails_under_the_current_rule(cfg, sol_stor
     assert refused.value.code == "not_reopenable"
     assert "fails under the current rule" in refused.value.message
     assert any(r.startswith("holdout_return_pct") for r in refused.value.details)
-    assert promotion.get(strategy.hash, "SOL").state == promotion.REJECTED
+    rejected = promotion.get(strategy.hash, "SOL")
+    assert rejected is not None
+    assert rejected.state == promotion.REJECTED
 
 
 def test_reopen_refuses_hashes_judged_under_the_current_rule(cfg, strategy, monkeypatch):
@@ -415,7 +423,9 @@ def test_kill_switch_flattens_and_pauses_until_resume(cfg):
 
     assert record is not None
     assert record["flattened"] == ["SOL"]
-    assert promotion.paused()["drawdown_pct"] == pytest.approx(16.0)
+    paused = promotion.paused()
+    assert paused is not None
+    assert paused["drawdown_pct"] == pytest.approx(16.0)
     assert book.position("SOL") is None
     assert promotion.check_kill_switch(book, {}) is None  # already paused
     promotion.resume()
@@ -442,7 +452,9 @@ def test_managed_symbols_skip_confluence_and_use_the_stored_spec(cfg, strategy, 
     monkeypatch.setattr(config(), "sentiment_enabled", True)
     monkeypatch.setattr(trading, "is_token_blocked", lambda _s: True)
     assert trading._confluence_gate("TKN", "buy") == 1.0
-    assert trading._load("TKN").hash == strategy.hash  # no file needed
+    loaded = trading._load("TKN")
+    assert loaded is not None
+    assert loaded.hash == strategy.hash  # no file needed
 
 
 def test_paper_books_match_a_backtest_replay(cfg, strategy, monkeypatch):
