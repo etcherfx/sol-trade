@@ -103,6 +103,8 @@ SECTION_DEFAULTS: dict[str, dict[str, Any]] = {
         "holdout_min_trades": 8,
         # Share of missing bars above which the data is flagged DATA_GAPS.
         "max_gap_fraction": 0.02,
+        # Share of the judged bars on which every rule reading a reference needs a value.
+        "min_reference_coverage": 0.8,
     },
     "promotion": {
         # Paper -> live waits for a human `approve` when true.

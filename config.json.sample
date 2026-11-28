@@ -51,7 +51,8 @@
     "min_trades": 30,
     "min_deflated_sharpe": 0.95,
     "holdout_min_trades": 8,
-    "max_gap_fraction": 0.02
+    "max_gap_fraction": 0.02,
+    "min_reference_coverage": 0.8
   },
 
   "promotion": {

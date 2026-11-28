@@ -426,7 +426,7 @@ The pipeline decides which strategies trade, with evidence for every step. Resea
 
 | Gate | Passes when | Config |
 | --- | --- | --- |
-| Evidence | At least 30 trades and under 2% missing bars; otherwise `INSUFFICIENT_EVIDENCE` | `gates.min_trades`, `gates.max_gap_fraction` |
+| Evidence | At least 30 trades, under 2% missing bars, and every reference the rules read usable on at least 80% of the judged bars (selection or held-out); otherwise `INSUFFICIENT_EVIDENCE` | `gates.min_trades`, `gates.max_gap_fraction`, `gates.min_reference_coverage` |
 | Drawdown | Max drawdown ≤ 15% of the live capital | `risk.max_drawdown_pct` |
 | Sharpe | Above 0 and above buy-and-hold | |
 | Folds | At least 3 of 4 folds profitable | `gates.folds`, `gates.min_positive_folds` |
@@ -451,7 +451,7 @@ Every strategy variant counts: the deflated Sharpe ratio corrects for the number
 | `backfill [--symbols A,B] [--timeframes 1h,15m] [--days N]` | Per series: source, bars added, range, gaps, duplicates, bad bars, coverage of the requested days and notes such as where the venue's history starts |
 | `backfill --fear-greed` | The [Fear & Greed index](#fear--greed-index) history instead of candles: days received, inserted, updated, the stored range and missing days |
 | `import-sentiment <file> [<file> ...] [--subreddits a,b] [--after YYYY-MM-DD] [--before YYYY-MM-DD]` | Per file: lines read, kept, inserted, duplicates, skipped (other subreddits, outside the days), bad lines, and the coverage it recorded per subreddit |
-| `backtest <strategy> <symbol>` | `verdict`, `reasons`, metrics, folds, benchmarks, gates, deflated Sharpe, trial number and count, flags, `rpc`; for a strategy that reads other symbols, `data.references` gives each one's source, stored range, the `series` read, `coverage` (share of selection bars with a value of each) and `usable_bars` (selection bars where every rule operand reading it has a value) |
+| `backtest <strategy> <symbol>` | `verdict`, `reasons`, metrics, folds, benchmarks, gates, deflated Sharpe, trial number and count, flags, `rpc`; for a strategy that reads other symbols, `data.references` gives each one's source, stored range, the `series` read, `coverage` (share of selection bars with a value of each) and `usable_bars` (selection bars where every rule operand reading it has a value; below `gates.min_reference_coverage` of the selection bars the verdict is `INSUFFICIENT_EVIDENCE`) |
 | `candidates [--symbol S]` | The pipeline, trials, and whether trading is paused |
 | `promote <strategy> <symbol>` | The transition, or a refusal code (`not_passed`, `costs_unmeasured`, `paper_full`, `source_conflict`, `not_ready`, `holdout_insufficient`, `holdout_failed`, ...) |
 | `demote <strategy> <symbol> [--reason R]` | The transition; `demote_pending` while the bot still has to sell |

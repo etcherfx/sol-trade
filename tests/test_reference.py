@@ -239,6 +239,49 @@ def test_reference_data_missing_from_the_held_out_period_is_insufficient_evidenc
     assert held["references"]["REF"]["usable_bars"] == 0
 
 
+def test_reference_data_on_too_few_bars_of_the_selection_period_is_insufficient_evidence(monkeypatch):
+    market = _market()
+    strategy = spec.compile_spec(_either(SPEC))
+    cut = evaluation.split(market, strategy)
+    half = cut.start + cut.selection_bars // 2
+    _store_ref(market.iloc[half:])  # REF covers only the second half of the selection period
+    result = evaluation.evaluate(strategy, "TKN", market, FREE)
+    assert result["verdict"] == evaluation.INSUFFICIENT
+    usable = result["data"]["references"]["REF"]["usable_bars"]
+    assert 0 < usable < 0.8 * cut.selection_bars
+    assert result["reasons"] == [
+        f"reference REF gives the rules a usable value on only {usable} of the {cut.selection_bars} bars in the "
+        f"selection period ({usable / cut.selection_bars:.0%}), below gates.min_reference_coverage (80%); "
+        "run backfill --symbols REF --timeframes 1h"
+    ]
+    assert evaluation.trials("TKN") == []
+    monkeypatch.setitem(config().gates, "min_reference_coverage", 0.4)
+    lenient = evaluation.evaluate(strategy, "TKN", market, FREE, record=False)
+    assert not any("reference" in r for r in lenient["reasons"]) and "metrics" in lenient
+
+
+def test_reference_data_on_most_bars_of_the_selection_period_is_judged_normally():
+    market = _market()
+    strategy = spec.compile_spec(_either(SPEC))
+    cut = evaluation.split(market, strategy)
+    _store_ref(market.iloc[cut.start + cut.selection_bars // 10 :])  # 90% of the selection period
+    result = evaluation.evaluate(strategy, "TKN", market, FREE, record=False)
+    usable = result["data"]["references"]["REF"]["usable_bars"]
+    assert 0.8 * cut.selection_bars <= usable < cut.selection_bars
+    assert not any("reference" in r for r in result["reasons"]) and "metrics" in result
+
+
+def test_reference_data_on_too_few_bars_of_the_held_out_period_is_insufficient_evidence():
+    market = _market()
+    strategy = spec.compile_spec(_either(SPEC))
+    cut = evaluation.split(market, strategy)
+    _store_ref(market.iloc[: cut.holdout_start + cut.holdout_bars // 2])  # REF stops halfway through
+    held = evaluation.holdout(strategy, "TKN", market, FREE)
+    assert held["verdict"] == evaluation.INSUFFICIENT and not held["passed"]
+    assert held["reasons"][0].startswith("reference REF gives the rules a usable value on only ")
+    assert "bars in the held-out period" in held["reasons"][0]
+
+
 def test_an_indicator_that_never_has_a_value_over_reference_gaps_is_insufficient_evidence():
     market = _market()
     _store_ref(market.drop(index=market.index[::20]))  # a bar missing every 20: present 95% of the time

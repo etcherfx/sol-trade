@@ -196,12 +196,15 @@ def _reference_info(
     ``coverage`` is the share of those bars with a value of every series
     the rules read from the symbol. ``usable_bars`` counts the bars where
     every rule operand that reads it (an EMA of a ratio, say) has a value,
-    on the bars its rule compares. A reference with no usable bar there
-    is a reason the evidence is insufficient, even when another branch of
-    the rules could trade without it; gaps elsewhere stay missing values.
+    on the bars its rule compares. A reference usable on fewer than
+    ``gates.min_reference_coverage`` of those bars is a reason the evidence
+    is insufficient, even when another branch of the rules could trade
+    without it; gaps elsewhere stay missing values.
     """
     info: dict[str, Any] = {}
     reasons: list[str] = []
+    min_coverage = float(config().gates["min_reference_coverage"])
+    bars = end - start
     refs = history.load_references(strategy.references, strategy.timeframe, required=False)
     usable = backtest.reference_usable(strategy, frame, refs, symbol)
     closes = frame["ts"].to_numpy(dtype=float)[start:end] + strategy.period_seconds
@@ -228,7 +231,13 @@ def _reference_info(
         elif usable_bars == 0:
             reasons.append(
                 f"reference {reference} gives the rules no usable value in the {period_name}: every operand "
-                f"reading it is missing on all {end - start} bars; " + backfill.format(symbol=reference)
+                f"reading it is missing on all {bars} bars; " + backfill.format(symbol=reference)
+            )
+        elif usable_bars < min_coverage * bars:
+            reasons.append(
+                f"reference {reference} gives the rules a usable value on only {usable_bars} of the {bars} bars "
+                f"in the {period_name} ({usable_bars / bars:.0%}), below gates.min_reference_coverage "
+                f"({min_coverage:.0%}); " + backfill.format(symbol=reference)
             )
     return info, reasons
 
